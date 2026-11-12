@@ -456,7 +456,10 @@ const BOT_AGGRESSION = 0.05;    // chance a bot attacks a neighbour while free l
 const BOT_LATE_AGGRESSION = 0.3; // same, once it has no free land left
 const BOT_BRAVERY = 0.6;        // bots only attack nations smaller than this share of their size...
 const BOT_LATE_BRAVERY = 1.1;   // ...or this share once there's no free land left to take...
-const BOT_FULL_BRAVERY = 1.6;   // ...or this share when their population is nearly at its max
+const BOT_FULL_BRAVERY = 1.25;  // ...or this share when their population is nearly at its max
+const BOT_WAR_REST = 30;        // after attacking a nation, a bot waits this many seconds before attacking any nation again
+const BOT_WAR_SHARE = 0.12;     // bots send 12-20% of their people at a nation (land grabs use more)...
+const BOT_WAVE_CAP = 1.5;       // ...but never more than 1.5x the defender's population, so big armies come in fair-sized waves
 const BOT_MAX_PILE_ON = 2;      // bots leave a nation alone once this many are already attacking it
 const BOT_BOAT_CHANCE = 0.3;    // chance a bot with nothing to do on land sends a boat instead
 const BOT_BUY_CHANCE = 0.9;     // chance a bot goes shopping each time it thinks...
@@ -1871,7 +1874,10 @@ function botThink(bot) {
   const rivals = touching.filter(t => t.target !== FREE && canPickOn(bot, t.target));
 
   let order = null;
-  if (rivals.length && Math.random() < (free.length ? BOT_AGGRESSION : BOT_LATE_AGGRESSION)) {
+  // Only one war wave at a time, then a rest, so a huge army comes in waves you can answer.
+  const resting = gameTime < (bot.warRestUntil || 0)
+    || attacks.some(a => a.attacker === bot.id && a.target !== FREE);
+  if (!resting && rivals.length && Math.random() < (free.length ? BOT_AGGRESSION : BOT_LATE_AGGRESSION)) {
     order = randomFrom(rivals);
   } else if (free.length) {
     order = randomFrom(free);
@@ -1881,9 +1887,15 @@ function botThink(bot) {
     return;
   }
 
-  const share = bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1;
   const aim = order.target === FREE ? bot : nations[order.target];
-  startAttack(bot, order.target, order.mass, bot.pop * share, aim.sumX / aim.tiles, aim.sumY / aim.tiles);
+  let troops;
+  if (order.target === FREE) {
+    troops = bot.pop * (bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1);
+  } else {
+    troops = Math.min(bot.pop * (BOT_WAR_SHARE + Math.random() * .08), aim.pop * BOT_WAVE_CAP);
+    bot.warRestUntil = gameTime + BOT_WAR_REST * (.7 + Math.random() * .6);
+  }
+  startAttack(bot, order.target, order.mass, troops, aim.sumX / aim.tiles, aim.sumY / aim.tiles);
 }
 
 /* With nothing left to do on land, sail at empty land or a weaker nation elsewhere. */
@@ -1892,8 +1904,13 @@ function botSendBoat(bot) {
     const tile = randomFrom(landTiles);
     const holder = owner[tile];
     if (holder === bot.id || borders[bot.id].has(borderKey(holder, landmass[tile]))) continue;
-    if (holder !== FREE && !canPickOn(bot, holder)) continue;
-    launchBoat(bot, tile, bot.pop * (.1 + Math.random() * .15));
+    if (holder !== FREE && (!canPickOn(bot, holder) || gameTime < (bot.warRestUntil || 0))) continue;
+    let troops = bot.pop * (.1 + Math.random() * .15);
+    if (holder !== FREE) {
+      troops = Math.min(troops, nations[holder].pop * BOT_WAVE_CAP);
+      bot.warRestUntil = gameTime + BOT_WAR_REST;
+    }
+    launchBoat(bot, tile, troops);
     return;
   }
 }
