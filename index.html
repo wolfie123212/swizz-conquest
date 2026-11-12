@@ -179,6 +179,22 @@
   .counter:hover { background: #ff8a8a; }
   .counter:disabled { background: #5c5266; color: #a59bb0; cursor: not-allowed; }
 
+  /* Defeat screen */
+  body.fallen #view { filter: grayscale(1) sepia(.35) brightness(.55) contrast(1.15); transform: scale(1.08); image-rendering: pixelated;
+    transition: filter 2.5s ease-out, transform 9s ease-out; }
+  body.fallen > :not(#view):not(#death) { opacity: 0; pointer-events: none; transition: opacity 1s; }
+  #death { z-index: 6; position: fixed; inset: 0; display: none; place-items: center;
+    background: radial-gradient(ellipse at center, transparent 35%, rgba(70, 0, 6, .6)); }
+  #death.show { display: grid; animation: deathFade 1.2s ease-out; }
+  @keyframes deathFade { from { opacity: 0; } }
+  #deathBand { width: 100%; padding: 26px 0 24px; text-align: center; background: rgba(6, 2, 10, .84);
+    border-top: 3px solid #5a0f16; border-bottom: 3px solid #5a0f16; }
+  #deathTitle { font-size: 64px; color: #d61f2c; letter-spacing: 8px; text-shadow: 4px 4px 0 #2a0508;
+    animation: deathTitle 1.8s ease-out; }
+  @keyframes deathTitle { from { letter-spacing: 48px; opacity: 0; } }
+  #deathReason { margin-top: 10px; font-size: 16px; color: #d8cfee; }
+  #tryAgain { margin-top: 18px; }
+
   #gameOver { position: fixed; inset: 0; display: none; place-items: center; background: rgba(8, 4, 18, .65); }
   #gameOver.show { display: grid; }
   #gameOverBox { padding: 26px 40px; text-align: center; }
@@ -275,6 +291,14 @@
   </div>
 </div>
 
+<div id="death">
+  <div id="deathBand">
+    <div id="deathTitle">Defeated</div>
+    <div id="deathReason"></div>
+    <button id="tryAgain" class="menuButton danger">Try again</button>
+  </div>
+</div>
+
 <div id="gameOver">
   <div id="gameOverBox" class="panel">
     <h1 id="gameOverText"></h1>
@@ -341,11 +365,12 @@ const MINE_PAID_NOW = 0.5;      // share of mined swizz paid at once; the rest w
 const MINE_STORAGE_SECONDS = 120; // a mine stops storing after this many seconds of output
 const TRAIN_SPEED = 6;          // tiles per second
 const BOAT_SPEED = 5;           // tiles per second
-const TRACK_RANGE = 110;        // furthest a stop can be from its station, in a straight line (tiles)
+const TRACK_RANGE = 80;         // furthest a stop can be from its station, in a straight line (tiles)
+const TRACK_MAX_LENGTH = 100;   // and no line is laid longer than this, however it has to wind
 const STATION_MAX_STOPS = 7;    // a station serves up to this many of its nearest cities and mines
 const TRACK_REUSE_COST = 0.25;  // new lines join onto existing track (anyone's) rather than lay their own...
 const TRACK_TURN_COST = 2;      // ...and avoid needless bends
-const TRACK_DETOUR = 40;        // track may swing this many tiles out of the way to get round water
+const TRACK_DETOUR = 25;        // track may swing this many tiles out of the way to get round water
 const OWN_CITY_FARE = 15;       // swizz per tile of track when a train reaches your own city
 const TRADE_FARE = 40;          // swizz per tile of track when it reaches another nation's city
 
@@ -1122,18 +1147,29 @@ function tradeSpeed(nation, partnerId) {
 
 /* The player's request for an alliance. Computer nations say no if they're
    full, at war with you, or you've recently betrayed someone. */
+/* Why a nation would turn down your alliance right now, or null if it would say yes. */
+function allianceProblem(id) {
+  const them = nations[id];
+  if (player.allies.size >= MAX_ALLIES) return `You can only have ${MAX_ALLIES} alliances`;
+  if (them.allies.size >= MAX_ALLIES) return `${them.name} already has ${MAX_ALLIES} allies`;
+  if (!canTrade(player.id, id)) return `${them.name} won't ally while you're at war`;
+  if (player.traitorUntil > gameTime) return `${them.name} doesn't trust a traitor`;
+  return null;
+}
+
+/* Returns true if they said yes. */
 function requestAlliance(id) {
   const them = nations[id];
   if (areAllies(player.id, id)) {
     allianceEnds.set(pairKey(player.id, id), gameTime + ALLIANCE_SECONDS);
-    return toast(`${them.name} renewed your alliance for another ${ALLIANCE_SECONDS / 60} minutes.`);
+    toast(`${them.name} renewed your alliance for another ${ALLIANCE_SECONDS / 60} minutes.`);
+    return true;
   }
-  if (player.allies.size >= MAX_ALLIES) return toast(`You can only have ${MAX_ALLIES} alliances.`);
-  if (them.allies.size >= MAX_ALLIES) return toast(`${them.name} already has ${MAX_ALLIES} allies.`);
-  if (!canTrade(player.id, id)) return toast(`${them.name} won't ally while you're at war.`);
-  if (player.traitorUntil > gameTime) return toast(`${them.name} doesn't trust a traitor.`);
+  const problem = allianceProblem(id);
+  if (problem) { toast(problem + "."); return false; }
   formAlliance(player, them);
   toast(`${them.name} accepted your alliance for ${ALLIANCE_SECONDS / 60} minutes!`);
+  return true;
 }
 
 function breakAlliance(id) {
@@ -2341,6 +2377,7 @@ function findTrackRoute(a, b) {
         if (q - p !== r - q) points.push([q % W, q / W | 0]);
       }
       if (tiles.length > 1) points.push([bx, by]);
+      if (tiles.length - 1 > TRACK_MAX_LENGTH) return null;   // too long a way round: not worth laying
       return { points, length: tiles.length - 1, tiles };
     }
     const x = tile % W, y = tile / W | 0;
@@ -2516,8 +2553,15 @@ function endGame(won, message) {
   updateHud();
   updateAlerts();
   updateNationUi();
-  document.getElementById("gameOverText").textContent = message || (won ? "The planet is yours!" : "Your nation has fallen");
-  document.getElementById("gameOver").classList.add("show");
+  if (won) {
+    document.getElementById("gameOverText").textContent = message || "The planet is yours!";
+    document.getElementById("gameOver").classList.add("show");
+    return;
+  }
+  // Defeat: the world drains to grey and slowly closes in, then the verdict.
+  document.body.classList.add("fallen");
+  document.getElementById("deathReason").textContent = message ? message.replace(/ You lose!$/, "") : "Your nation has fallen.";
+  setTimeout(() => document.getElementById("death").classList.add("show"), 1500);
 }
 
 /* ============================== PLAYER INPUT ============================== */
@@ -2574,6 +2618,7 @@ let betrayConfirm = { id: 0, until: 0 };   // the ally you've been warned about 
 canvas.addEventListener("click", event => {
   if (dragged) { dragged = false; return; }
   if (swallowClick) { swallowClick = false; return; }
+  if (performance.now() - wheelPressedAt < 500) return;   // a double-press on a wheel button, not an order
   const tile = tileAtEvent(event);
   if (phase === "choosing") return chooseStart(tile);
   if (phase !== "playing") return;
@@ -3001,7 +3046,8 @@ const BUILD_DETAILS = {
 };
 const WHEEL_RADIUS = 76;
 const wheelBox = document.getElementById("wheel");
-let wheel = null;   // { tile, stage: "build" | "nation" | "attack", target, items, hover }
+let wheel = null;
+let wheelPressedAt = -Infinity;   // so a quick second click can't fall through onto the map   // { tile, stage: "build" | "nation" | "attack", target, items, hover }
 
 function openWheel(event, tile) {
   closeWheel();
@@ -3037,6 +3083,7 @@ function addWheelItem([x, y], className, icon, info, run) {
   el.addEventListener("mouseenter", () => { if (wheel) { wheel.hover = item; refreshWheel(); } });
   el.addEventListener("mouseleave", () => { if (wheel && wheel.hover === item) { wheel.hover = null; refreshWheel(); } });
   el.addEventListener("click", () => {
+    wheelPressedAt = performance.now();
     const problem = info().problem;
     if (problem) return toast(problem);
     run();
@@ -3075,7 +3122,8 @@ function fillWheel() {
     const id = wheel.target;
     addWheelItem([-60, 0], "big ally", "", () => areAllies(player.id, id)
       ? { name: "Ally options", cost: "Allied", detail: `trade, help and joint attacks. Ends in ${formatClock(allianceLeft(player.id, id))}` }
-      : { name: "Send alliance request", cost: "Ally", detail: `${player.allies.size}/${MAX_ALLIES} alliances used` },
+      : { name: "Send alliance request", cost: "Ally", detail: `${player.allies.size}/${MAX_ALLIES} alliances used`,
+          problem: allianceProblem(id) },      // a "no" greys the button out and keeps the wheel open
       () => {
         if (areAllies(player.id, id)) { nationPanelId = id; updateNationUi(); }
         else requestAlliance(id);
@@ -3324,6 +3372,7 @@ function toast(message) {
 }
 
 document.getElementById("again").addEventListener("click", () => location.reload());
+document.getElementById("tryAgain").addEventListener("click", () => location.reload());
 
 /* ============================== DRAWING ==============================
    The map lives on a hidden canvas with one pixel per tile. Only tiles that
