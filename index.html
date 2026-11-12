@@ -17,6 +17,11 @@
 
   .panel { background: #160e26; border: 3px solid #5b4685; box-shadow: 3px 3px 0 rgba(0, 0, 0, .6); }
 
+  #colorPicker { position: fixed; top: 112px; left: 50%; transform: translateX(-50%); display: flex; align-items: center;
+    gap: 10px; padding: 6px 10px; white-space: nowrap; }
+  #swatches { display: flex; gap: 6px; }
+  .colorChoice { width: 24px; height: 24px; padding: 0; border: 3px solid #160e26; outline: 2px solid transparent; cursor: pointer; }
+  .colorChoice.picked { outline-color: #ffffff; }
   #clockBar { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: none; align-items: center;
     gap: 10px; padding: 4px 5px 4px 10px; }
   #clock { font-size: 16px; min-width: 56px; text-align: center; }
@@ -185,6 +190,7 @@
 <canvas id="view"></canvas>
 
 <div id="banner" class="panel">Choose a starting location</div>
+<div id="colorPicker" class="panel"><span>Your colour</span><div id="swatches"></div></div>
 <div id="clockBar" class="panel"><span id="clock">0:00</span><button id="pauseButton" aria-label="Pause">II</button></div>
 <div id="alerts"></div>
 
@@ -306,8 +312,10 @@ const PRICES = {
   silo: { first: 80000, growth: 1.3, max: 500000 },
 };
 const CITY_MAX_POP = 6000000;   // every city level adds this much max population...
-const CITY_UPGRADE_SURCHARGE = 0.35; // ...but upgrading a city costs this much extra per level it already has,
-                                // so several smaller cities beat one giant one
+const CITY_CHEAP_LEVELS = 7;   // upgrading a city is cheaper than building a new one until it reaches this level...
+const CITY_UPGRADE_DISCOUNT = 0.6; // ...costing this share of a new city's price...
+const CITY_BIG_GROWTH = 1.6;    // ...then each level past it costs this many times more, so building new wins
+                                // (level 8 costs about 1.5x a new city, level 10 about 4x)
 const CITY_DESTROYED_KILL = 0.6; // a city destroyed by a missile kills this share of the people it housed
 const CITY_GROWTH_RATE = 0.0015; // added to GROWTH_RATE per city level
 const MINE_INCOME = 100;        // swizz/s per level, levels 1-10 (Swizz Mine)
@@ -351,6 +359,7 @@ const PORT_HURT_SECONDS = 20;   // a port under submarine attack runs at half sp
 // Diplomacy
 const MAX_ALLIES = 2;
 const ALLIANCE_SECONDS = 300;   // alliances run out after this long unless renewed
+const RENEW_WARNING = 30;       // this many seconds before one of yours runs out, a pop-up offers to renew it
 const ALLY_TRADE_BONUS = 1.5;   // trains and ships run this much faster when trading with an ally
 const TRAITOR_SECONDS = 180;    // how long the punishment for attacking an ally lasts
 const TRAITOR_PENALTY = 0.5;    // growth, income and trade speed are multiplied by this while it lasts
@@ -1064,6 +1073,24 @@ function expireAlliances() {
       const other = nations[a].isPlayer ? nations[b] : nations[b].isPlayer ? nations[a] : null;
       if (other) toast(`Your alliance with ${other.name} ran out. Ally again to renew it.`);
     }
+  }
+}
+
+/* Shortly before one of your alliances runs out, ask whether to request another. */
+const renewOffered = new Set();   // alliance periods already asked about
+
+function offerRenewals() {
+  if (confirmYes || !player || !player.alive) return;
+  for (const id of player.allies) {
+    const left = allianceLeft(player.id, id);
+    const period = `${id}:${allianceEnds.get(pairKey(player.id, id))}`;
+    if (left > RENEW_WARNING || renewOffered.has(period)) continue;
+    renewOffered.add(period);
+    const them = nations[id];
+    askToConfirm("Renew alliance?",
+      `Your alliance with ${them.name} ends in ${Math.ceil(left)} seconds. Ask them to stay allies for another ${ALLIANCE_SECONDS / 60} minutes?`,
+      "Request alliance", () => requestAlliance(id), "Let it end");
+    return;
   }
 }
 
@@ -1962,7 +1989,10 @@ function botBuild(bot) {
   for (const type of wishes) {
     if (bot.swizz < priceOf(type, bot)) continue;    // can't afford this yet: try something cheaper
     const existing = own(type).filter(b => !isBusy(b));
-    if (existing.length && type !== "fort" && Math.random() < .5 && botUpgrade(bot, randomFrom(existing))) return true;
+    if (type === "city") {                          // grow small cities first, then found new ones
+      const small = existing.filter(b => b.level < CITY_CHEAP_LEVELS);
+      if (small.length && botUpgrade(bot, randomFrom(small))) return true;
+    } else if (existing.length && type !== "fort" && Math.random() < .5 && botUpgrade(bot, randomFrom(existing))) return true;
     const tile = botFindSpot(bot, type);
     if (tile < 0) {
       if (botUpgrade(bot, existing[0])) return true;
@@ -2086,7 +2116,10 @@ function priceOf(type, nation = player) {
 /* What the next level of an existing building costs. */
 function upgradePrice(b, nation = player) {
   if (b.type === "mine" && b.branch === "mine" && b.level >= MINE_CHOICE_LEVEL) return DRILL_PRICE;
-  if (b.type === "city") return Math.round(priceOf("city", nation) * (1 + CITY_UPGRADE_SURCHARGE * b.level) / 10) * 10;
+  if (b.type === "city") {
+    const share = CITY_UPGRADE_DISCOUNT * CITY_BIG_GROWTH ** Math.max(0, b.level - CITY_CHEAP_LEVELS + 1);
+    return Math.round(priceOf("city", nation) * share / 10) * 10;
+  }
   return priceOf(b.type, nation);
 }
 
@@ -2419,6 +2452,7 @@ function tick() {
   if (tickCount++ % TICKS_PER_SECOND === 0) {
     refreshStops();
     expireAlliances();
+    offerRenewals();
     updateNationUi();
   }
   updateConstruction();
@@ -2592,11 +2626,12 @@ function setPaused(on) {
   document.getElementById("pauseMenu").classList.toggle("show", paused);
 }
 
-function askToConfirm(title, text, yesLabel, onYes) {
+function askToConfirm(title, text, yesLabel, onYes, noLabel = "Cancel") {
   confirmYes = onYes;
   document.getElementById("confirmTitle").textContent = title;
   document.getElementById("confirmText").textContent = text;
   document.getElementById("confirmYes").textContent = yesLabel;
+  document.getElementById("confirmNo").textContent = noLabel;
   document.getElementById("confirm").classList.add("show");
 }
 
@@ -2653,10 +2688,25 @@ function betrayalConfirmed(id, retry) {
   return false;
 }
 
+/* Your colour, picked before you start. None of these are taken by a computer nation. */
+const PLAYER_COLORS = ["#3ee6c1", "#2e4bff", "#b7ff3c", "#ff2fd0", "#c8102e", "#ff6a00", "#8b5a2b"];
+let playerColor = PLAYER_COLORS[0];
+for (const color of PLAYER_COLORS) {
+  const choice = element("button", "colorChoice" + (color === playerColor ? " picked" : ""));
+  choice.style.background = color;
+  choice.setAttribute("aria-label", `Play as ${color}`);
+  choice.addEventListener("click", () => {
+    playerColor = color;
+    for (const other of document.querySelectorAll(".colorChoice")) other.classList.toggle("picked", other === choice);
+  });
+  document.getElementById("swatches").append(choice);
+}
+
 function chooseStart(tile) {
   if (tile < 0 || isWater(tile)) return toast("You can't start in the ocean. Pick a spot on land.");
   if (owner[tile] !== FREE) return toast(`That land belongs to ${nations[owner[tile]].name}. Pick empty land.`);
-  player = createNation("Your Nation", "#3ee6c1", "★", true);
+  player = createNation("Your Nation", playerColor, "★", true);
+  document.getElementById("colorPicker").style.display = "none";
   claimStartingLand(player, tile);
   scanBorders();
   phase = "playing";
@@ -2843,7 +2893,9 @@ function describeBuilding(b) {
     const next = b.level < CITY_HOUSE_LEVEL ? `Becomes a Town at level ${CITY_HOUSE_LEVEL}`
       : b.level < CITY_SKYSCRAPER_LEVEL ? `Becomes a Metropolis at level ${CITY_SKYSCRAPER_LEVEL}` : `Top stage reached`;
     return [`+${formatNumber(cityMaxPop(b))} max population, +${(b.level * CITY_GROWTH_RATE * 100).toFixed(1)}% growth`,
-      `Each level adds ${formatNumber(CITY_MAX_POP)}. Big cities cost more to upgrade than building a new one. ${next}`];
+      `Each level adds ${formatNumber(CITY_MAX_POP)}. ${b.level < CITY_CHEAP_LEVELS
+        ? `Upgrading is cheaper than a new city until level ${CITY_CHEAP_LEVELS}.`
+        : `Past level ${CITY_CHEAP_LEVELS} a new city is better value.`} ${next}`];
   }
   if (b.type === "station") {
     const mines = b.stops.filter(s => s.type === "mine").length;
