@@ -17,7 +17,27 @@
 
   .panel { background: #160e26; border: 3px solid #5b4685; box-shadow: 3px 3px 0 rgba(0, 0, 0, .6); }
 
-  #banner { position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+  #clockBar { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: none; align-items: center;
+    gap: 10px; padding: 4px 5px 4px 10px; }
+  #clock { font-size: 16px; min-width: 56px; text-align: center; }
+  #pauseButton { width: 28px; height: 22px; padding: 0; border: 0; background: #3a2c57; color: #f1ecff; cursor: pointer; }
+  #pauseButton:hover { color: #ffd166; }
+
+  /* Pause menu and yes/no pop-ups */
+  .overlay { z-index: 5; position: fixed; inset: 0; display: none; place-items: center; background: rgba(8, 4, 18, .65); }
+  .overlay.show { display: grid; }
+  .menuBox { padding: 22px 28px; text-align: center; min-width: 280px; max-width: 440px; }
+  .menuBox h1 { margin: 0 0 14px; font-size: 32px; font-weight: normal; }
+  #confirmTitle { font-size: 24px; }
+  .menuBox p { margin: 0 0 16px; color: #d8cfee; line-height: 1.5; text-align: left; }
+  .menuButtons { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .menuButton { border: 0; padding: 9px 16px; background: #3ee6c1; color: #160e26; cursor: pointer; font-size: 16px; }
+  .menuButton.quiet { background: #3a2c57; color: #f1ecff; }
+  .menuButton.danger { background: #ff6b6b; }
+  .menuButton:hover { outline: 3px solid #ffd166; }
+  .menuHint { margin-top: 12px; color: #8b7fa6; }
+
+  #banner { position: fixed; top: 58px; left: 50%; transform: translateX(-50%);
     padding: 10px 18px; font-size: 16px; white-space: nowrap; pointer-events: none; }
 
   /* Bottom left: a small feed of notifications above the radar */
@@ -165,6 +185,7 @@
 <canvas id="view"></canvas>
 
 <div id="banner" class="panel">Choose a starting location</div>
+<div id="clockBar" class="panel"><span id="clock">0:00</span><button id="pauseButton" aria-label="Pause">II</button></div>
 <div id="alerts"></div>
 
 <div id="countdown" class="panel"></div>
@@ -226,6 +247,28 @@
   </div>
 </div>
 
+<div id="pauseMenu" class="overlay">
+  <div class="panel menuBox">
+    <h1>Paused</h1>
+    <div class="menuButtons">
+      <button id="resume" class="menuButton">Resume</button>
+      <button id="newGame" class="menuButton quiet">New game</button>
+    </div>
+    <div class="menuHint">Esc to resume</div>
+  </div>
+</div>
+
+<div id="confirm" class="overlay">
+  <div class="panel menuBox">
+    <h1 id="confirmTitle"></h1>
+    <p id="confirmText"></p>
+    <div class="menuButtons">
+      <button id="confirmNo" class="menuButton quiet">Cancel</button>
+      <button id="confirmYes" class="menuButton danger"></button>
+    </div>
+  </div>
+</div>
+
 <div id="gameOver">
   <div id="gameOverBox" class="panel">
     <h1 id="gameOverText"></h1>
@@ -262,8 +305,10 @@ const PRICES = {
   fort: { first: 15000, growth: 1.3, max: 150000 },
   silo: { first: 80000, growth: 1.3, max: 500000 },
 };
-const CITY_MAX_POP = 2000000;   // a city's Nth level adds N times this to max population
-                                // (level 1: +2M, level 10: +110M in total, level 30: +930M)
+const CITY_MAX_POP = 6000000;   // every city level adds this much max population...
+const CITY_UPGRADE_SURCHARGE = 0.35; // ...but upgrading a city costs this much extra per level it already has,
+                                // so several smaller cities beat one giant one
+const CITY_DESTROYED_KILL = 0.6; // a city destroyed by a missile kills this share of the people it housed
 const CITY_GROWTH_RATE = 0.0015; // added to GROWTH_RATE per city level
 const MINE_INCOME = 100;        // swizz/s per level, levels 1-10 (Swizz Mine)
 const LAB_INCOME = 300;         // swizz/s per level, levels 11-50 (Chemical Lab)
@@ -305,6 +350,7 @@ const PORT_HURT_SECONDS = 20;   // a port under submarine attack runs at half sp
 
 // Diplomacy
 const MAX_ALLIES = 2;
+const ALLIANCE_SECONDS = 300;   // alliances run out after this long unless renewed
 const ALLY_TRADE_BONUS = 1.5;   // trains and ships run this much faster when trading with an ally
 const TRAITOR_SECONDS = 180;    // how long the punishment for attacking an ally lasts
 const TRAITOR_PENALTY = 0.5;    // growth, income and trade speed are multiplied by this while it lasts
@@ -378,14 +424,18 @@ const BOT_LATE_BRAVERY = 1.1;   // ...or this share once there's no free land le
 const BOT_FULL_BRAVERY = 1.6;   // ...or this share when their population is nearly at its max
 const BOT_MAX_PILE_ON = 2;      // bots leave a nation alone once this many are already attacking it
 const BOT_BOAT_CHANCE = 0.3;    // chance a bot with nothing to do on land sends a boat instead
-const BOT_BUY_CHANCE = 0.25;    // chance a bot buys something each time it thinks
+const BOT_BUY_CHANCE = 0.9;     // chance a bot goes shopping each time it thinks...
+const BOT_BUYS_PER_THINK = 3;   // ...buying up to this many things if it can afford them
+const BOT_BUILDER_WAIT = 150;   // "builder" bots stay home this many seconds, building and growing troops,
+                                // while "expander" bots grab land as fast as they can
+const BOT_NERVOUS_AFTER = 240;  // from this many seconds in, bots facing a dangerous rival build defences
 const BOT_MAX_CITY_LEVELS = 4;  // bots stop buying cities at this many levels...
 const BOT_CITY_LEVEL_SECONDS = 60; // ...plus one more for every this many seconds of game
 const BOT_PORT_LEVELS = 2;      // bots with a coast want ports with this many ships...
 const BOT_PORT_LEVEL_SECONDS = 120; // ...plus one more ship for every this many seconds of game
-const BOT_MAX_STATION_LEVELS = 2; // and stations at this many (each level is a train)
+const BOT_MAX_STATION_LEVELS = 8; // and stations at this many (each level is a train); they add one every 3 minutes
 const BOT_MAX_STOPS = 3;        // bot stations and ports only serve their nearest stops, to limit clutter
-const BOT_MAX_MINE_LEVELS = 6;  // bots stop buying mine levels at this many, unless digging for the core
+const BOT_MAX_MINE_LEVELS = 6;  // bots want this many mine levels, plus one a minute (more if digging for the core)
 const BOT_ALLIANCE_CHANCE = 0.02; // chance per think that a bot allies with another bot
 const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a missile
 const START_RADIUS = 5;       // size in tiles of a nation's starting land
@@ -639,6 +689,7 @@ function createNation(name, color, glyph, isPlayer) {
     mineIncome: 0, income: 0, uranium: 0, uraniumRate: 0,
     allies: new Set(), traitorUntil: 0, askReadyAt: 0, labelTile: -1, labelFit: 0,
     goal: randomFrom(["conquest", "conquest", "core", "space"]),   // what a computer nation works towards
+    style: randomFrom(["expander", "builder"]),   // grab land early, or stay home and build up first
   };
   nations.push(nation);
   return nation;
@@ -658,7 +709,7 @@ function setOwner(i, id) {
   } else if (previous !== FREE) {
     // A building belongs to whoever owns its land, so land burnt back to empty takes it with it.
     const standing = buildings.find(b => b.tile === i);
-    if (standing) removeBuilding(standing);
+    if (standing) removeBuilding(standing, previous);
   }
   markDirty(i);
 }
@@ -693,8 +744,7 @@ function placeBots() {
     }
     placed.push(spot);
     const [name, color, glyph] = BOT_DATA[b];
-    claimStartingLand(createNation(name, color, glyph, false), spot);
-    addBuilding(spot, "city").buildLeft = 0;   // every computer nation starts with a finished city you can trade with
+    claimStartingLand(createNation(name, color, glyph, false), spot);   // bare land, just like yours
   }
 }
 
@@ -857,6 +907,21 @@ function processAttack(attack) {
   if (best >= 0) attack.labelTile = best;
 }
 
+/* Two nations attacking each other on the same front: their armies meet and
+   fight it out first, one for one, before either side takes any land. */
+function clashArmies() {
+  for (const a of attacks) {
+    if (a.target === FREE || a.troops < 1) continue;
+    const b = attacks.find(o => o.attacker === a.target && o.target === a.attacker && o.mass === a.mass && o.troops >= 1);
+    if (!b) continue;
+    const fallen = Math.min(a.troops, b.troops);
+    a.troops -= fallen;
+    b.troops -= fallen;
+    const mine = nations[a.attacker].isPlayer ? b : nations[b.attacker].isPlayer ? a : null;
+    if (mine) toast(`Your army met ${nations[mine.attacker].name}'s: ${formatNumber(fallen)} troops fell on each side.`);
+  }
+}
+
 /* Spend your own people, one for one, to cancel an attack or boat coming at you. */
 function counterAttack(attackId) {
   const attack = attacks.find(a => a.id === attackId) || boats.find(b => b.id === attackId);
@@ -979,6 +1044,29 @@ let gameTime = 0;              // seconds since the game started
 const pairKey = (a, b) => Math.min(a, b) * 256 + Math.max(a, b);
 const areAllies = (a, b) => nations[a].allies.has(b);
 
+const allianceEnds = new Map();   // pair of allies -> game time their alliance runs out
+
+function formAlliance(a, b) {
+  a.allies.add(b.id);
+  b.allies.add(a.id);
+  allianceEnds.set(pairKey(a.id, b.id), gameTime + ALLIANCE_SECONDS);
+}
+
+const allianceLeft = (a, b) => (allianceEnds.get(pairKey(a, b)) ?? 0) - gameTime;
+
+/* Alliances end quietly when their time runs out. */
+function expireAlliances() {
+  for (let a = 1; a < nations.length; a++) {
+    for (const b of [...nations[a].allies]) {
+      if (b < a || allianceLeft(a, b) > 0) continue;
+      nations[a].allies.delete(b);
+      nations[b].allies.delete(a);
+      const other = nations[a].isPlayer ? nations[b] : nations[b].isPlayer ? nations[a] : null;
+      if (other) toast(`Your alliance with ${other.name} ran out. Ally again to renew it.`);
+    }
+  }
+}
+
 function canTrade(a, b) {
   return a === b || (warsUntil.get(pairKey(a, b)) || 0) <= gameTime;
 }
@@ -1008,13 +1096,16 @@ function tradeSpeed(nation, partnerId) {
    full, at war with you, or you've recently betrayed someone. */
 function requestAlliance(id) {
   const them = nations[id];
+  if (areAllies(player.id, id)) {
+    allianceEnds.set(pairKey(player.id, id), gameTime + ALLIANCE_SECONDS);
+    return toast(`${them.name} renewed your alliance for another ${ALLIANCE_SECONDS / 60} minutes.`);
+  }
   if (player.allies.size >= MAX_ALLIES) return toast(`You can only have ${MAX_ALLIES} alliances.`);
   if (them.allies.size >= MAX_ALLIES) return toast(`${them.name} already has ${MAX_ALLIES} allies.`);
   if (!canTrade(player.id, id)) return toast(`${them.name} won't ally while you're at war.`);
   if (player.traitorUntil > gameTime) return toast(`${them.name} doesn't trust a traitor.`);
-  player.allies.add(id);
-  them.allies.add(player.id);
-  toast(`${them.name} accepted your alliance!`);
+  formAlliance(player, them);
+  toast(`${them.name} accepted your alliance for ${ALLIANCE_SECONDS / 60} minutes!`);
 }
 
 function breakAlliance(id) {
@@ -1601,12 +1692,37 @@ function updateLaunches() {
       continue;
     }
     launch.timeLeft -= DT;
-    if (launch.timeLeft <= 0) return declareWinner(n, "reached space");
+    if (launch.timeLeft <= 0) return declareWinner(n, "reached space", launch.site.tile, "space");
   }
 }
 
-function declareWinner(nation, how) {
-  endGame(nation.isPlayer, nation.isPlayer ? `You win! You ${how}!` : `${nation.name} ${how}. You lose!`);
+/* Someone has won: play that win's moment, then show the result. */
+const FINALE_SECONDS = 5;
+let finale = null;   // { kind: "core" | "space" | "conquest", won, message, tile, color, born, sparks }
+
+function declareWinner(nation, how, tile = -1, kind = "conquest") {
+  if (finale) return;
+  if (tile < 0) tile = nation.labelTile >= 0 ? nation.labelTile : Math.round(nation.sumY / nation.tiles) * W + Math.round(nation.sumX / nation.tiles);
+  const own = landTiles.filter(i => owner[i] === nation.id);
+  finale = {
+    kind, tile, color: nation.color, born: performance.now(), won: nation.isPlayer,
+    message: nation.isPlayer ? `You win! You ${how}!` : `${nation.name} ${how}. You lose!`,
+    sparks: Array.from({ length: 18 }, (_, k) => ({ tile: randomFrom(own) ?? tile, start: k * .24 })),
+  };
+  phase = "finale";
+  closeWheel();
+  aiming = null;
+  selected = null;
+  setPaused(false);
+  updateBuildUi();
+  if (kind === "conquest") {                     // show the whole planet in the winner's colours
+    viewScale = fitScale;
+  } else {                                       // zoom in on the mine or the launch pad
+    viewScale = Math.max(viewScale, Math.min(MAX_ZOOM * devicePixelRatio, fitScale * 4));
+    viewX = canvas.width / 2 - (tile % W + .5) * viewScale;
+    viewY = canvas.height * .62 - ((tile / W | 0) + .5) * viewScale;
+  }
+  clampView();
 }
 
 function checkLandWin() {
@@ -1661,8 +1777,10 @@ function canPickOn(bot, targetId) {
 function botThink(bot) {
   bot.thinkTimer -= DT;
   if (bot.thinkTimer > 0) return;
-  bot.thinkTimer = 5 + Math.random() * 5;
-  if (Math.random() < BOT_BUY_CHANCE) botBuild(bot);
+  bot.thinkTimer = (bot.style === "expander" ? 3 : 5) + Math.random() * 5;
+  if (Math.random() < BOT_BUY_CHANCE) {
+    for (let k = 0; k < BOT_BUYS_PER_THINK && botBuild(bot); k++);
+  }
   botDiplomacy(bot);
   botFire(bot);
   if (bot.pop < bot.maxPop * .15) return;
@@ -1677,6 +1795,9 @@ function botThink(bot) {
       return;
     }
   }
+
+  // Builders stay home early on, building and growing troops, and only spill out when nearly full.
+  if (bot.style === "builder" && gameTime < BOT_BUILDER_WAIT && bot.pop < bot.maxPop * .85) return;
 
   const touching = [...borders[bot.id]].map(key => ({ target: key >> 8, mass: key & 255 }));
   const free = touching.filter(t => t.target === FREE);
@@ -1694,7 +1815,7 @@ function botThink(bot) {
     return;
   }
 
-  const share = .1 + Math.random() * .1;
+  const share = bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1;
   const aim = order.target === FREE ? bot : nations[order.target];
   startAttack(bot, order.target, order.mass, bot.pop * share, aim.sumX / aim.tiles, aim.sumY / aim.tiles);
 }
@@ -1715,10 +1836,7 @@ function botDiplomacy(bot) {
   if (bot.allies.size >= MAX_ALLIES || Math.random() > BOT_ALLIANCE_CHANCE) return;
   const partner = randomFrom(nations.filter(n => n && n.alive && !n.isPlayer && n !== bot
     && n.allies.size < MAX_ALLIES && !areAllies(bot.id, n.id) && canTrade(bot.id, n.id)));
-  if (partner) {
-    bot.allies.add(partner.id);
-    partner.allies.add(bot.id);
-  }
+  if (partner) formAlliance(bot, partner);
 }
 
 /* Bots at war sometimes fire at the enemy's buildings, and always at a rocket site. */
@@ -1744,6 +1862,10 @@ function botFindSpot(bot, type) {
     const spots = landTiles.filter(i => deposit[i] && roomy(i));
     return randomFrom(spots.filter(i => deposit[i] === URANIUM)) ?? randomFrom(spots) ?? -1;   // uranium first
   }
+  if (type === "sam" || type === "fort") {
+    const guard = guardSpot(bot, type, roomy);
+    if (guard >= 0) return guard;
+  }
   const reach = Math.sqrt(bot.tiles) / 2 + 2;
   for (let tries = 0; tries < 30; tries++) {
     const x = Math.round(bot.sumX / bot.tiles + (Math.random() * 2 - 1) * reach);
@@ -1755,14 +1877,56 @@ function botFindSpot(bot, type) {
   return -1;
 }
 
+/* How much a bot cares about protecting a building. */
+function importance(b) {
+  if (b.type === "rocket") return 1000;
+  if (b.type === "mine") return b.level * (b.branch === "mine" ? 4 : 2);
+  if (b.type === "city") return b.level * 3;
+  if (b.type === "silo") return 15;
+  if (b.type === "station" || b.type === "port") return b.level;
+  return 0;
+}
+
+/* A spot beside the bot's most important building that isn't covered yet. */
+function guardSpot(bot, type, roomy) {
+  const covers = (d, b) => d.type === type && owner[d.tile] === bot.id
+    && tileDistance(d.tile, b.tile) <= (type === "sam" ? samRadius(d) : fortRadius(d));
+  const precious = buildings
+    .filter(b => owner[b.tile] === bot.id && importance(b) > 0 && !buildings.some(d => covers(d, b)))
+    .sort((a, b) => importance(b) - importance(a));
+  for (const b of precious.slice(0, 3)) {
+    for (let tries = 0; tries < 25; tries++) {
+      const x = b.tile % W + Math.round((Math.random() * 2 - 1) * 7), y = (b.tile / W | 0) + Math.round((Math.random() * 2 - 1) * 7);
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      const tile = y * W + x;
+      if (isLand(tile) && roomy(tile)) return tile;
+    }
+  }
+  return -1;
+}
+
+/* A bot gets nervous when a rival that isn't its ally looks dangerous: much
+   bigger than it, holding nukes, or getting close to winning. */
+function isNervous(bot) {
+  if (gameTime < BOT_NERVOUS_AFTER) return false;
+  const standings = raceStandings();
+  const nearlyWon = new Set(["land", "core", "space"].flatMap(k => standings[k].filter(s => s.value > .6).map(s => s.n.id)));
+  return nations.some(n => n && n.alive && n !== bot && !areAllies(bot.id, n.id) && (
+    n.pop > bot.pop * 1.5
+    || (n.siloLevels >= MISSILES.nuke.level && n.uranium >= MISSILES.nuke.uranium)
+    || nearlyWon.has(n.id)));
+}
+
+/* Returns true if the bot spent anything. */
 function botUpgrade(bot, b) {
-  if (isBusy(b)) return;
+  if (!b || isBusy(b)) return false;
   if (needsMineChoice(b)) b.branch = bot.goal === "core" ? "mine" : "lab";
   const cost = upgradePrice(b, bot);
-  if (bot.swizz < cost) return;
+  if (bot.swizz < cost) return false;
   bot.swizz -= cost;
   upgradeBuilding(b);
   tallyBuildings();
+  return true;
 }
 
 /* Bots buy at most one thing each time they think. They work down a shopping
@@ -1770,7 +1934,7 @@ function botUpgrade(bot, b) {
 function botBuild(bot) {
   for (const i of irradiated) {
     if (owner[i] !== bot.id) continue;
-    if (bot.pop > cleanupCost(i, bot.id) * 3) return void cleanRadiation(bot, i);
+    if (bot.pop > cleanupCost(i, bot.id) * 3) return cleanRadiation(bot, i);
     break;
   }
   const own = type => buildings.filter(b => b.type === type && owner[b.tile] === bot.id);
@@ -1779,25 +1943,29 @@ function botBuild(bot) {
   const port = own("port").find(isBuilt);
   const wantSubs = Math.min(SUB_MAX, 1 + Math.floor((gameTime - BOT_SUB_START) / BOT_SUB_SECONDS));
   if (port && gameTime > BOT_SUB_START && subs.filter(u => u.owner === bot.id).length < wantSubs
-      && bot.swizz > SUB_COST * 1.5 && Math.random() < .4 && buySub(bot, port)) return;
+      && bot.swizz > SUB_COST * 1.5 && Math.random() < .4 && buySub(bot, port)) return true;
 
+  const minutes = gameTime / 60;
   const wishes = [];
+  if (isNervous(bot)) {                              // a scary rival: defend what matters first
+    if (bot.samLevels < 2 + minutes / 4) wishes.push("sam");
+    if (bot.fortLevels < 2 + minutes / 4) wishes.push("fort");
+  }
   if (bot.cityLevels < BOT_MAX_CITY_LEVELS + gameTime / BOT_CITY_LEVEL_SECONDS) wishes.push("city");
   if (bot.portLevels < BOT_PORT_LEVELS + gameTime / BOT_PORT_LEVEL_SECONDS && ownsCoast(bot)) wishes.push("port");
-  if (bot.cityLevels >= 2 && bot.stationLevels === 0) wishes.push("station");
-  if (bot.mineLevels < BOT_MAX_MINE_LEVELS) wishes.push("mine");
-  if (bot.cityLevels >= 2 && bot.stationLevels < BOT_MAX_STATION_LEVELS) wishes.push("station");
+  if (bot.cityLevels >= 2 && bot.stationLevels < Math.min(BOT_MAX_STATION_LEVELS, 1 + minutes / 3)) wishes.push("station");
+  if (bot.mineLevels < BOT_MAX_MINE_LEVELS + minutes) wishes.push("mine");
   if (gameTime > 120 && bot.fortLevels < 2) wishes.push("fort");
-  if (gameTime > 180 && bot.samLevels < 1) wishes.push("sam");
+  if (gameTime > 180 && bot.samLevels < 1 + minutes / 6) wishes.push("sam");
   if (gameTime > 240 && bot.siloLevels < 1) wishes.push("silo");
 
   for (const type of wishes) {
-    if (bot.swizz < priceOf(type, bot)) return;      // saving up
-    const existing = own(type);
-    if (existing.length && type !== "fort" && Math.random() < .6) return botUpgrade(bot, randomFrom(existing));
+    if (bot.swizz < priceOf(type, bot)) continue;    // can't afford this yet: try something cheaper
+    const existing = own(type).filter(b => !isBusy(b));
+    if (existing.length && type !== "fort" && Math.random() < .5 && botUpgrade(bot, randomFrom(existing))) return true;
     const tile = botFindSpot(bot, type);
     if (tile < 0) {
-      if (existing.length) return botUpgrade(bot, randomFrom(existing));
+      if (botUpgrade(bot, existing[0])) return true;
       continue;                                      // nowhere to build it: try the next wish
     }
     bot.swizz -= priceOf(type, bot);
@@ -1805,10 +1973,10 @@ function botBuild(bot) {
     if (type === "mine") b.uranium = clearDeposit(tile);
     tallyBuildings();
     refreshStops();
-    return;
+    return true;
   }
 
-  botChaseGoal(bot, own);
+  return botChaseGoal(bot, own);
 }
 
 function botChaseGoal(bot, own) {
@@ -1817,25 +1985,21 @@ function botChaseGoal(bot, own) {
     // Warmongers dig uranium (stopping before the mine would have to choose) and work their silo up to nukes.
     const uraniumMine = mines.find(m => m.uranium && m.branch !== "lab" && m.level < MINE_CHOICE_LEVEL);
     const silo = own("silo").find(b => b.level < MISSILES.hbomb.level);
-    if (uraniumMine && Math.random() < .5) botUpgrade(bot, uraniumMine);
-    else if (silo && bot.uraniumRate > 0) botUpgrade(bot, silo);
+    if (uraniumMine && Math.random() < .5) return botUpgrade(bot, uraniumMine);
+    if (silo && bot.uraniumRate > 0) return botUpgrade(bot, silo);
   } else if (bot.goal === "core" && mines.length) {
     const deepest = mines.filter(m => m.branch !== "lab").sort((a, b) => b.level - a.level)[0];
-    if (deepest) botUpgrade(bot, deepest);
+    return botUpgrade(bot, deepest);
   } else if (bot.goal === "space") {
     const site = own("rocket")[0];
     const station = own("station").sort((a, b) => b.level - a.level)[0];
     const labs = mines.filter(m => m.branch !== "mine");
     const unfinished = labs.sort((a, b) => b.level - a.level).slice(0, ROCKET_LABS).find(m => m.level < ROCKET_LAB_LEVEL);
-    if (site) {
-      if (unfinished) botUpgrade(bot, unfinished);
-      else launchRocket(bot, site);
-    } else if (station && station.level >= ROCKET_STATION_LEVEL && !isBusy(station)) {
-      convertToRocket(station);
-    } else if (station && bot.swizz >= priceOf("station", bot)) {
-      botUpgrade(bot, station);
-    }
+    if (site) return unfinished ? botUpgrade(bot, unfinished) : launchRocket(bot, site);
+    if (station && station.level >= ROCKET_STATION_LEVEL && !isBusy(station)) { convertToRocket(station); return true; }
+    if (station) return botUpgrade(bot, station);
   }
+  return false;
 }
 
 /* ============================== BUILDINGS ==============================
@@ -1867,8 +2031,8 @@ function mineIncome(b) {
   return basic + Math.min(past, 40) * LAB_INCOME + Math.max(0, past - 40) * TRADER_INCOME;
 }
 
-/* Each level of a city adds more than the last: level N adds N x CITY_MAX_POP. */
-const cityMaxPop = b => CITY_MAX_POP * b.level * (b.level + 1) / 2;
+/* Every city level adds the same max population. */
+const cityMaxPop = b => CITY_MAX_POP * b.level;
 
 const needsMineChoice = b => b.type === "mine" && b.level === MINE_CHOICE_LEVEL && !b.branch;
 
@@ -1922,6 +2086,7 @@ function priceOf(type, nation = player) {
 /* What the next level of an existing building costs. */
 function upgradePrice(b, nation = player) {
   if (b.type === "mine" && b.branch === "mine" && b.level >= MINE_CHOICE_LEVEL) return DRILL_PRICE;
+  if (b.type === "city") return Math.round(priceOf("city", nation) * (1 + CITY_UPGRADE_SURCHARGE * b.level) / 10) * 10;
   return priceOf(b.type, nation);
 }
 
@@ -2020,7 +2185,7 @@ function finishConstruction(b) {
     const after = buildingInfo(b).name;
     if (after !== before) toast(`Your ${before} evolved: ${after}!`);
   }
-  if (b.type === "mine" && b.branch !== "lab" && b.level >= CORE_LEVEL) declareWinner(nation, "reached the planet's core");
+  if (b.type === "mine" && b.branch !== "lab" && b.level >= CORE_LEVEL) declareWinner(nation, "reached the planet's core", b.tile, "core");
 }
 
 function updateConstruction() {
@@ -2052,10 +2217,16 @@ function convertToRocket(station) {
 }
 
 /* Knocks a building off the map, with anything that depended on it. */
-function removeBuilding(b) {
+function removeBuilding(b, holder = owner[b.tile]) {
   const index = buildings.indexOf(b);
   if (index < 0) return;             // already gone
   buildings.splice(index, 1);
+  if (b.type === "city" && isBuilt(b) && holder !== FREE) {   // the people living there die with it
+    const n = nations[holder];
+    const killed = Math.min(n.pop, cityMaxPop(b) * CITY_DESTROYED_KILL);
+    n.pop -= killed;
+    if (n.isPlayer && killed >= 1) toast(`Your ${buildingInfo(b).name} was destroyed: ${formatNumber(killed)} people died.`);
+  }
   trains = trains.filter(train => train.station !== b);
   ships = ships.filter(ship => ship.port !== b);
   if (selected === b) selected = null;
@@ -2241,12 +2412,13 @@ let tickCount = 0;
 let lastTickAt = 0;       // lets trains glide smoothly between ticks
 
 function tick() {
-  if (phase !== "playing") return;
+  if (phase !== "playing" || isFrozen()) return;
   gameTime += DT;
 
   tallyBuildings();
   if (tickCount++ % TICKS_PER_SECOND === 0) {
     refreshStops();
+    expireAlliances();
     updateNationUi();
   }
   updateConstruction();
@@ -2278,6 +2450,7 @@ function tick() {
   }
 
   scanBorders();
+  clashArmies();
   for (const attack of [...attacks]) {
     if (attacks.includes(attack)) processAttack(attack);
     if (phase !== "playing") return;
@@ -2295,6 +2468,8 @@ function tick() {
 
 function endGame(won, message) {
   phase = "over";
+  finale = null;
+  setPaused(false);
   attacks = [];
   boats = [];
   missiles = [];
@@ -2391,13 +2566,57 @@ canvas.addEventListener("contextmenu", event => {
   updateBuildUi();
 });
 
+/* Esc closes whatever's open; with nothing open it pauses the game. */
 addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
-  closeWheel();
-  aiming = null;
-  selected = null;
-  updateBuildUi();
+  if (confirmYes) return closeConfirm(false);
+  if (paused) return setPaused(false);
+  if (wheel || aiming || selected) {
+    closeWheel();
+    aiming = null;
+    selected = null;
+    updateBuildUi();
+    return;
+  }
+  if (phase === "playing") setPaused(true);
 });
+
+/* ------------------------------ Pause menu and yes/no pop-ups ------------------------------
+   The game stands still while either is open. */
+let paused = false;      // the pause menu is open
+let confirmYes = null;   // while a pop-up is open: what to do if the answer is yes
+const isFrozen = () => paused || confirmYes !== null;
+
+function setPaused(on) {
+  paused = on && phase === "playing";
+  document.getElementById("pauseMenu").classList.toggle("show", paused);
+}
+
+function askToConfirm(title, text, yesLabel, onYes) {
+  confirmYes = onYes;
+  document.getElementById("confirmTitle").textContent = title;
+  document.getElementById("confirmText").textContent = text;
+  document.getElementById("confirmYes").textContent = yesLabel;
+  document.getElementById("confirm").classList.add("show");
+}
+
+function closeConfirm(yes) {
+  const run = confirmYes;
+  confirmYes = null;
+  document.getElementById("confirm").classList.remove("show");
+  if (yes && run) {
+    run();
+    updateHud();
+    updateNationUi();
+  }
+}
+
+document.getElementById("confirmYes").addEventListener("click", () => closeConfirm(true));
+document.getElementById("confirmNo").addEventListener("click", () => closeConfirm(false));
+document.getElementById("pauseButton").addEventListener("click", () => setPaused(true));
+document.getElementById("resume").addEventListener("click", () => setPaused(false));
+document.getElementById("newGame").addEventListener("click", () =>
+  askToConfirm("Start a new game?", "This game will be lost.", "New game", () => location.reload()));
 
 function finishAiming(tile) {
   const aim = aiming;
@@ -2410,19 +2629,27 @@ function finishAiming(tile) {
   } else {
     if (isWater(tile)) toast("Missiles have to land on land.");
     else if (owner[tile] === player.id) toast("That's your own land!");
-    else if (owner[tile] !== FREE && !betrayalConfirmed(owner[tile])) aiming = aim;   // stay aiming while they decide
+    else if (owner[tile] !== FREE && !betrayalConfirmed(owner[tile], () => { aiming = aim; finishAiming(tile); })) {
+      // waiting for an answer in the pop-up
+    }
     else if (!launchMissile(player, aim.silo, aim.weapon, tile)) toast(missileProblem(player, aim.silo, aim.weapon) || "Can't fire.");
   }
   updateBuildUi();
   updateHud();
 }
 
-/* Attacking an ally takes two clicks. Returns true if it's fine to go ahead. */
-function betrayalConfirmed(id) {
+/* Attacking an ally needs a yes in a pop-up first. Returns true if it's fine to
+   go ahead now; otherwise it asks, and runs "retry" if the answer is yes. */
+function betrayalConfirmed(id, retry) {
   if (!areAllies(player.id, id)) return true;
   if (betrayConfirm.id === id && betrayConfirm.until > gameTime) return true;
-  betrayConfirm = { id, until: gameTime + 4 };
-  toast(`${nations[id].name} is your ally! Click again to betray them. You'll be heavily punished.`);
+  askToConfirm(`Betray ${nations[id].name}?`,
+    `Are you sure you want to do this? ${nations[id].name} is your ally. Attacking them ends the alliance, `
+      + `and for ${TRAITOR_SECONDS / 60} minutes your growth, income and trade are halved and nobody will ally with you.`,
+    "Yes, attack them", () => {
+      betrayConfirm = { id, until: gameTime + 30 };
+      retry();
+    });
   return false;
 }
 
@@ -2436,6 +2663,7 @@ function chooseStart(tile) {
   document.getElementById("banner").style.display = "none";
   document.getElementById("leftDock").style.display = "flex";
   document.getElementById("radar").style.display = "block";
+  document.getElementById("clockBar").style.display = "flex";
   toast("Click land to send troops. Right-click your land to build, or a nation to ally or attack.");
   updateNationUi();
   tallyBuildings();
@@ -2456,7 +2684,7 @@ function orderAttack(tile) {
     return;
   }
 
-  if (target !== FREE && !betrayalConfirmed(target)) return;
+  if (target !== FREE && !betrayalConfirmed(target, () => orderAttack(tile))) return;
 
   const name = target === FREE ? "that land" : nations[target].name;
   const troops = Math.floor(player.pop * slider.value / 100);
@@ -2499,6 +2727,12 @@ document.getElementById("hudToggle").addEventListener("click", event => {
   event.currentTarget.setAttribute("aria-label", mini ? "Expand the status bar" : "Minimize the status bar");
 });
 
+/* Seconds as m:ss. */
+function formatClock(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
 function formatNumber(value) {
   const v = Math.floor(value);
   if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
@@ -2520,6 +2754,7 @@ function updateHud() {
   hud.growth.classList.toggle("down", g < 0);
   hud.popFill.style.width = Math.min(100, player.pop / player.maxPop * 100) + "%";
   hud.attackTroops.textContent = formatNumber(player.pop * pct / 100) + " troops";
+  document.getElementById("clock").textContent = formatClock(gameTime);
   hud.miniSwizz.textContent = `Swizz ${formatNumber(player.swizz)}`;
   hud.miniPop.textContent = `Pop ${formatNumber(player.pop)} / ${formatNumber(player.maxPop)}`;
   hud.miniAttack.textContent = `Attack ${pct}%`;
@@ -2608,7 +2843,7 @@ function describeBuilding(b) {
     const next = b.level < CITY_HOUSE_LEVEL ? `Becomes a Town at level ${CITY_HOUSE_LEVEL}`
       : b.level < CITY_SKYSCRAPER_LEVEL ? `Becomes a Metropolis at level ${CITY_SKYSCRAPER_LEVEL}` : `Top stage reached`;
     return [`+${formatNumber(cityMaxPop(b))} max population, +${(b.level * CITY_GROWTH_RATE * 100).toFixed(1)}% growth`,
-      `Next level adds ${formatNumber(CITY_MAX_POP * (b.level + 1))} max population. ${next}`];
+      `Each level adds ${formatNumber(CITY_MAX_POP)}. Big cities cost more to upgrade than building a new one. ${next}`];
   }
   if (b.type === "station") {
     const mines = b.stops.filter(s => s.type === "mine").length;
@@ -2785,7 +3020,7 @@ function fillWheel() {
   } else if (wheel.stage === "nation") {
     const id = wheel.target;
     addWheelItem([-60, 0], "big ally", "", () => areAllies(player.id, id)
-      ? { name: "Ally options", cost: "Allied", detail: "trade, help and joint attacks" }
+      ? { name: "Ally options", cost: "Allied", detail: `trade, help and joint attacks. Ends in ${formatClock(allianceLeft(player.id, id))}` }
       : { name: "Send alliance request", cost: "Ally", detail: `${player.allies.size}/${MAX_ALLIES} alliances used` },
       () => {
         if (areAllies(player.id, id)) { nationPanelId = id; updateNationUi(); }
@@ -2793,12 +3028,8 @@ function fillWheel() {
         closeWheel();
       });
     addWheelItem([60, 0], "big attack", "", () => ({ name: "Attack", cost: "Attack", detail: "troops or missiles" }), () => {
-      if (areAllies(player.id, id)) {
-        betrayConfirm = { id, until: gameTime + 30 };
-        toast(`${nations[id].name} is your ally! Attacking will betray them, and you'll be heavily punished.`);
-      }
-      wheel.stage = "attack";
-      fillWheel();
+      const openAttacks = () => { if (wheel) { wheel.stage = "attack"; fillWheel(); } };
+      if (betrayalConfirmed(id, openAttacks)) openAttacks();
     });
   } else {
     const id = wheel.target;
@@ -2946,7 +3177,7 @@ function updateNationUi() {
   panel.style.display = "block";
   document.getElementById("nationTitle").textContent = them.name;
   const share = Math.round(them.tiles / landTiles.length * 100);
-  const relation = areAllies(player.id, them.id) ? "Your ally"
+  const relation = areAllies(player.id, them.id) ? `Your ally for ${formatClock(allianceLeft(player.id, them.id))}`
     : !canTrade(player.id, them.id) ? `At war: no trade for ${Math.ceil(warsUntil.get(pairKey(player.id, them.id)) - gameTime)}s` : "At peace";
   document.getElementById("nationStatus").textContent = `${formatNumber(them.pop)} people, ${share}% of the land. ${relation}.`;
 
@@ -2960,6 +3191,7 @@ function updateNationUi() {
       { label: `Give ${ALLY_GIFT * 100}% troops`, run: () => giveToAlly(them.id, "troops") },
       { label: `Give ${ALLY_GIFT * 100}% money`, run: () => giveToAlly(them.id, "money") },
       { label: "End alliance", danger: true, run: () => breakAlliance(them.id) },
+      { label: `Renew alliance (${formatClock(allianceLeft(player.id, them.id))})`, run: () => requestAlliance(them.id) },
     ]);
   } else {
     setActions(box, [{ label: `Ally (${player.allies.size}/${MAX_ALLIES})`, run: () => requestAlliance(them.id) }]);
@@ -3155,6 +3387,12 @@ function px(color, x, y, w = 1, h = 1) {
   art.fillRect(plotX + Math.round(x), plotY + Math.round(y), w, h);
 }
 
+/* A colour part way between two hex colours (0 = the first, 1 = the second). */
+function mixColor(from, to, t) {
+  const a = hexToRgb(from), b = hexToRgb(to);
+  return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * t)).join(",")})`;
+}
+
 /* The same random-looking number every frame for a given building. */
 function seeded(tile, k) {
   const v = Math.sin(tile * 12.9898 + k * 78.233) * 43758.5453;
@@ -3198,6 +3436,14 @@ function drawMineArt(b, time, shirt) {
   pixelDisc("#57442b", 7, 8, 5.5, 5.5, 1, b.tile + 1);
   pixelDisc("#433320", 7, 8, 4, 4, 1, b.tile + 2);
   pixelDisc("#2c2115", 7, 8, 2.5);
+  if (b.branch !== "lab" && b.level > MINE_CHOICE_LEVEL) {   // the shaft to the core glows hotter, then golden
+    const near = Math.min(1, (b.level - MINE_CHOICE_LEVEL) / (CORE_LEVEL - MINE_CHOICE_LEVEL));
+    art.globalAlpha = .2 + .25 * near * (.5 + .5 * Math.sin(time * 3));
+    pixelDisc(mixColor("#ff6a1a", "#ffe066", near), 7, 8, 5 + near * 7);
+    art.globalAlpha = 1;
+    pixelDisc(mixColor("#7a2a10", "#c99a2e", near), 7, 8, 2.5 + near * 2);
+    pixelDisc(mixColor("#ff6a1a", "#fff3b0", near), 7, 8, 1.5 + near * 2);
+  }
   for (let k = 0; k < 7; k++) {                      // swizz in the rock
     const angle = seeded(b.tile, k) * Math.PI * 2, reach = 2 + seeded(b.tile, k + 20) * 3;
     px(b.uranium && k % 2 ? "#9dff6a" : "#ffd166", 7 + Math.cos(angle) * reach, 8 + Math.sin(angle) * reach);
@@ -3439,6 +3685,7 @@ function drawSiloArt(b, time, color) {
 function drawRocketArt(b, time) {
   const launching = launches.some(l => l.site === b);
   px("#55606e", 2, 13, 13, 3);                       // launch pad
+  if (finale && finale.kind === "space" && finale.tile === b.tile) return;   // it's lifting off: drawn by the finale
   px("#e0a23a", 3, 1, 1, 12);                        // gantry
   for (let y = 2; y < 13; y += 3) px("#e0a23a", 3, y, 4, 1);
   px("#f5f5f5", 7, 2, 4, 11);                        // the rocket
@@ -3568,6 +3815,21 @@ function drawSinkings(now) {
 
 function drawMissiles(now) {
   plotX = plotY = 0;
+  // Everyone can see where each missile will land, and how big the blast will be.
+  const blink = Math.floor(now / 250) % 2 === 0;
+  for (const m of missiles) {
+    const cx = tileToArt(m.target % W), cy = tileToArt(m.target / W | 0), r = MISSILES[m.kind].radius * ART_RES;
+    const dots = Math.max(16, Math.floor(r * 1.4));
+    for (let k = 0; k < dots; k += 2) {
+      const a = k / dots * Math.PI * 2 + now / 2000;
+      px(blink ? "#ff3b3b" : "#ffd166", cx + Math.cos(a) * r, cy + Math.sin(a) * r, 2, 2);
+    }
+    px("#ff3b3b", cx - 6, cy, 4, 2);                 // crosshair
+    px("#ff3b3b", cx + 3, cy, 4, 2);
+    px("#ff3b3b", cx, cy - 6, 2, 4);
+    px("#ff3b3b", cx, cy + 3, 2, 4);
+    if (blink) px("#ffffff", cx, cy);
+  }
   const glide = phase === "playing" ? Math.min(.1, (now - lastTickAt) / 1000) * MISSILE_SPEED : 0;
   for (const m of missiles) {
     const color = m.kind === "hbomb" ? "#ff5dd1" : m.kind === "nuke" ? "#9dff6a" : "#ffffff";
@@ -3994,9 +4256,93 @@ function render() {
       viewY + (here.y + .5) * viewScale - 14 * dpr, 8 * dpr, nations[boat.attacker].color);
   }
   drawFloatingTexts(now);
+  if (finale) drawFinale(now);
   drawRadar(now);
 
   requestAnimationFrame(render);
+}
+
+/* ------------------------------ Winning moments ------------------------------
+   Drawn straight onto the screen, in blocks the size of one art pixel. */
+function drawFinale(now) {
+  const t = (now - finale.born) / 1000 / FINALE_SECONDS;   // 0 to 1
+  if (t >= 1) return endGame(finale.won, finale.message);
+  const u = Math.max(2, Math.round(viewScale / ART_RES));
+  const at = tile => [viewX + (tile % W + .5) * viewScale, viewY + ((tile / W | 0) + .5) * viewScale];
+  const block = (color, x, y, w = 1, h = 1) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x / u) * u, Math.round(y / u) * u, w * u, h * u);
+  };
+  const disc = (color, x, y, r) => {
+    for (let dy = -Math.floor(r); dy <= r; dy++) {
+      const half = Math.round(Math.sqrt(r * r - dy * dy));
+      block(color, x - half * u, y + dy * u, half * 2 + 1, 1);
+    }
+  };
+  const [sx, sy] = at(finale.tile);
+
+  if (finale.kind === "core") {
+    // The shaft breaks through: a golden hole opens, light pours up and out, and the screen turns gold.
+    const open = Math.min(1, t * 2.5);
+    ctx.globalAlpha = .35;
+    disc("#ffb347", sx, sy, 8 + open * 22);
+    ctx.globalAlpha = .6 + .2 * Math.sin(now / 90);
+    block("#fff3b0", sx - (2 + open * 4) * u, 0, 5 + open * 8, sy / u);
+    ctx.globalAlpha = 1;
+    disc("#ffd166", sx, sy, 3 + open * 9);
+    disc("#fff8d8", sx, sy, 1 + open * 5);
+    for (let k = 0; k < 3; k++) {                  // rings of light rolling outwards
+      const r = ((t * 2 + k / 3) % 1) * 46;
+      for (let a = 0; a < 48; a += 2) block("#ffe066", sx + Math.cos(a / 48 * Math.PI * 2) * r * u, sy + Math.sin(a / 48 * Math.PI * 2) * r * u);
+    }
+    if (t > .55) {
+      ctx.fillStyle = `rgba(255, 215, 90, ${Math.min(.75, (t - .55) * 1.6)})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  } else if (finale.kind === "space") {
+    // The rocket lifts off on a column of fire and smoke and climbs off the top of the screen.
+    const climb = t < .15 ? 0 : ((t - .15) / .85) ** 2 * (sy + 40 * u);
+    const shake = t < .25 ? Math.round(Math.sin(now / 30)) * u : 0;
+    for (let k = 0; k < 22; k++) {                 // smoke left behind on the way up
+      const h = climb * k / 22, age = Math.max(0, t - .15) * (1 - k / 22);
+      ctx.globalAlpha = Math.max(0, .55 - age * .4);
+      disc("#d8d4e4", sx + Math.sin(k * 1.7) * 3 * u, sy - h, 2 + age * 8);
+    }
+    ctx.globalAlpha = 1;
+    const x = sx + shake, y = sy - climb;
+    const flame = Math.floor(now / 70) % 2;
+    block(flame ? "#ffd166" : "#ff8a3a", x - 2 * u, y, 4, 3 + flame * 2);       // engine fire
+    block("#fff3b0", x - u, y, 2, 2);
+    block("#f5f5f5", x - 2 * u, y - 11 * u, 4, 11);                             // the rocket
+    block(TRAIN_RED, x - u, y - 13 * u, 2, 2);
+    block(TRAIN_RED, x - 2 * u, y - 12 * u, 4, 1);
+    block("#38e8ff", x - u, y - 8 * u, 2, 2);
+    block(TRAIN_RED, x - 3 * u, y - 3 * u, 1, 3);
+    block(TRAIN_RED, x + 2 * u, y - 3 * u, 1, 3);
+    if (t > .85) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${(t - .85) * 3})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  } else {
+    // Fireworks bursting all over the winner's land.
+    const seconds = t * FINALE_SECONDS;
+    for (const spark of finale.sparks) {
+      const age = seconds - spark.start;
+      if (age < 0 || age > 1.2) continue;
+      const [x, y] = at(spark.tile);
+      // Sized from the screen, so they're big even with the whole planet showing
+      const dot = Math.max(4, Math.round(canvas.width / 150)), reach = canvas.width / 13;
+      ctx.globalAlpha = 1 - age / 1.2;
+      if (age < .15) { ctx.fillStyle = "#ffffff"; ctx.fillRect(x - dot * 2, y - dot * 2, dot * 4, dot * 4); }   // the bang
+      const colors = [finale.color, "#ffffff", "#ffd166", "#ff5dd1"];
+      for (let k = 0; k < 16; k++) {
+        const a = k / 16 * Math.PI * 2, r = age * reach * (k % 2 ? .7 : 1);
+        ctx.fillStyle = colors[k % 4];
+        ctx.fillRect(Math.round((x + Math.cos(a) * r) / dot) * dot, Math.round((y + Math.sin(a) * r + age * age * reach * .4) / dot) * dot, dot, dot);
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
 }
 
 /* ============================== START ============================== */
