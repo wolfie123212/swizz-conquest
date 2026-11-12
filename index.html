@@ -762,9 +762,11 @@ function claimStartingLand(nation, centre) {
   }
 }
 
-function placeBots() {
-  const roomy = landTiles.filter(i => landmassSizes[landmass[i]] >= CONTINENT_SIZE);
-  const placed = [];
+/* Rivals land only after you pick your spot, so you can't plan around them.
+   They still keep their distance from you and each other. */
+function placeBots(playerSpot) {
+  const roomy = landTiles.filter(i => landmassSizes[landmass[i]] >= CONTINENT_SIZE && owner[i] === FREE);
+  const placed = [playerSpot];
   let minDistance = 55;
   for (let b = 0; b < BOT_COUNT; b++) {
     let spot = -1;
@@ -2751,12 +2753,15 @@ for (const color of PLAYER_COLORS) {
 
 function chooseStart(tile) {
   if (tile < 0 || isWater(tile)) return toast("You can't start in the ocean. Pick a spot on land.");
-  if (owner[tile] !== FREE) return toast(`That land belongs to ${nations[owner[tile]].name}. Pick empty land.`);
   player = createNation("Your Nation", playerColor, "★", true);
   document.getElementById("colorPicker").style.display = "none";
   claimStartingLand(player, tile);
-  scanBorders();
   phase = "playing";
+  placeBots(tile);
+  for (let i = 0; i < W * H; i++) drawTile(i);   // reveal the deposits
+  mapCtx.putImageData(mapImage, 0, 0);
+  scanBorders();
+  toast("Rival nations have landed. Glowing deposits are now revealed.");
   document.getElementById("banner").style.display = "none";
   document.getElementById("leftDock").style.display = "flex";
   document.getElementById("radar").style.display = "block";
@@ -3411,7 +3416,9 @@ function drawTile(i) {
     g = OCEAN_SHALLOW[1] + (OCEAN_DEEP[1] - OCEAN_SHALLOW[1]) * t + shade * 6;
     b = OCEAN_SHALLOW[2] + (OCEAN_DEEP[2] - OCEAN_SHALLOW[2]) * t + shade * 8;
   } else {
-    const ground = deposit[i] === URANIUM ? [90 + shade * 40, 226 + shade * 29, 70 + shade * 50]   // green uranium
+    const hidden = phase === "choosing";   // mines stay a secret until you've picked your spot
+    const ground = hidden ? LAND_COLOR.map(c => c + shade * 6)
+      : deposit[i] === URANIUM ? [90 + shade * 40, 226 + shade * 29, 70 + shade * 50]   // green uranium
       : deposit[i] ? [226 + shade * 29, 196 + shade * 40, 60 + shade * 70]             // glowing swizz deposit
       : LAND_COLOR.map(c => c + shade * 6);
     const id = owner[i];
@@ -4453,7 +4460,6 @@ generateMap();
 setupShading();
 for (let i = 0; i < W * H; i++) drawTile(i);
 mapCtx.putImageData(mapImage, 0, 0);
-placeBots();
 resize();
 updateHud();
 requestAnimationFrame(render);
