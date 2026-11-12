@@ -341,10 +341,11 @@ const MINE_PAID_NOW = 0.5;      // share of mined swizz paid at once; the rest w
 const MINE_STORAGE_SECONDS = 120; // a mine stops storing after this many seconds of output
 const TRAIN_SPEED = 6;          // tiles per second
 const BOAT_SPEED = 5;           // tiles per second
-const TRACK_RANGE = 70;         // furthest a station can lay track, in tiles
-const STATION_MAX_STOPS = 4;    // a station only serves its nearest few cities and mines
+const TRACK_RANGE = 110;        // furthest a stop can be from its station, in a straight line (tiles)
+const STATION_MAX_STOPS = 7;    // a station serves up to this many of its nearest cities and mines
 const TRACK_REUSE_COST = 0.25;  // new lines join onto existing track (anyone's) rather than lay their own...
 const TRACK_TURN_COST = 2;      // ...and avoid needless bends
+const TRACK_DETOUR = 40;        // track may swing this many tiles out of the way to get round water
 const OWN_CITY_FARE = 15;       // swizz per tile of track when a train reaches your own city
 const TRADE_FARE = 40;          // swizz per tile of track when it reaches another nation's city
 
@@ -2293,8 +2294,9 @@ function addTrack(route, change) {
    { points, length, tiles } or null if water cuts the two off. */
 function findTrackRoute(a, b) {
   const ax = a % W, ay = a / W | 0, bx = b % W, by = b / W | 0;
-  const left = Math.max(0, Math.min(ax, bx) - 20), right = Math.min(W - 1, Math.max(ax, bx) + 20);
-  const top = Math.max(0, Math.min(ay, by) - 20), bottom = Math.min(H - 1, Math.max(ay, by) + 20);
+  const roam = TRACK_DETOUR;     // how far outside the straight line between them track may go to get round water
+  const left = Math.max(0, Math.min(ax, bx) - roam), right = Math.min(W - 1, Math.max(ax, bx) + roam);
+  const top = Math.max(0, Math.min(ay, by) - roam), bottom = Math.min(H - 1, Math.max(ay, by) + roam);
   const STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
   const cost = new Map(), from = new Map();
   const heap = [];   // [priority, state]
