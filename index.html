@@ -344,7 +344,8 @@ const CITY_DESTROYED_KILL = 0.6; // a city destroyed by a missile kills this sha
 const CITY_GROWTH_RATE = 0.0015; // added to GROWTH_RATE per city level
 const MINE_INCOME = 100;        // swizz/s per level, levels 1-10 (Swizz Mine)
 const LAB_INCOME = 300;         // swizz/s per level, levels 11-50 (Chemical Lab)
-const TRADER_INCOME = 1000;     // swizz/s per level, levels 51+ (Day Trader)
+const TRADER_INCOME = 1000;     // swizz/s per level after a lab becomes a Day Trader
+const TRADER_LEVEL = 20;        // from this level a lab may switch to a Day Trader (but it no longer counts as a lab for the rocket)
 const DEEP_MINE_INCOME = 100;   // swizz/s per level past 10, for mines kept digging towards the core
 const MINE_CHOICE_LEVEL = 10;   // at this level a mine must choose: keep digging, or become a lab
 const CITY_HOUSE_LEVEL = 4;     // cities start as huts, become houses at this level...
@@ -1734,7 +1735,7 @@ function updateDefences() {
    build and launch a rocket from a converted train station. */
 let launches = [];   // { site, nation, timeLeft }
 
-const readyLabs = id => buildings.filter(b => b.type === "mine" && b.branch === "lab"
+const readyLabs = id => buildings.filter(b => b.type === "mine" && b.branch === "lab" && !b.trader
   && b.level >= ROCKET_LAB_LEVEL && owner[b.tile] === id).length;
 
 function rocketProblem(nation, site) {
@@ -1816,7 +1817,7 @@ function raceStandings() {
     for (const b of buildings) {
       if (owner[b.tile] !== id) continue;
       if (b.type === "mine" && b.branch !== "lab") deepest = Math.max(deepest, b.level);
-      if (b.type === "mine" && b.branch === "lab") labLevels.push(Math.min(b.level, ROCKET_LAB_LEVEL));
+      if (b.type === "mine" && b.branch === "lab" && !b.trader) labLevels.push(Math.min(b.level, ROCKET_LAB_LEVEL));
       if (b.type === "station") station = Math.max(station, Math.min(b.level, ROCKET_STATION_LEVEL));
       if (b.type === "rocket") station = ROCKET_STATION_LEVEL;
     }
@@ -2004,6 +2005,7 @@ function isNervous(bot) {
 function botUpgrade(bot, b) {
   if (!b || isBusy(b)) return false;
   if (needsMineChoice(b)) b.branch = bot.goal === "core" ? "mine" : "lab";
+  if (canBecomeTrader(b) && bot.goal !== "space") b.trader = b.level;   // space racers keep their labs for the rocket
   const cost = upgradePrice(b, bot);
   if (bot.swizz < cost) return false;
   bot.swizz -= cost;
@@ -2114,8 +2116,11 @@ function mineIncome(b) {
   const basic = Math.min(b.level, MINE_CHOICE_LEVEL) * MINE_INCOME;
   const past = Math.max(0, b.level - MINE_CHOICE_LEVEL);
   if (b.branch !== "lab") return basic + past * DEEP_MINE_INCOME;
-  return basic + Math.min(past, 40) * LAB_INCOME + Math.max(0, past - 40) * TRADER_INCOME;
+  const labPast = b.trader ? b.trader - MINE_CHOICE_LEVEL : past;   // b.trader = the level it switched at
+  return basic + labPast * LAB_INCOME + (b.trader ? b.level - b.trader : 0) * TRADER_INCOME;
 }
+
+const canBecomeTrader = b => b.type === "mine" && b.branch === "lab" && !b.trader && b.level >= TRADER_LEVEL;
 
 /* Every city level adds the same max population. */
 const cityMaxPop = b => CITY_MAX_POP * b.level;
@@ -2139,7 +2144,7 @@ function buildingInfo(b) {
   if (b.type === "rocket") return { name: "Launch Site", icon: "\uE008" };
   if (b.type === "sub") return { name: "Submarine", icon: "\uE009" };
   if (b.branch !== "lab") return { name: b.level > MINE_CHOICE_LEVEL ? "Deep Mine" : "Swizz Mine", icon: "\uE001" };
-  if (b.level <= 50) return { name: "Chemical Lab", icon: "\uE002" };
+  if (!b.trader) return { name: "Chemical Lab", icon: "\uE002" };
   return { name: "Day Trader", icon: "\uE003" };
 }
 
@@ -2919,6 +2924,10 @@ function buildingActions(b) {
       { label: "Turn into a Chemical Lab", run: () => { b.branch = "lab"; toast("Your mine is now a Chemical Lab."); } },
     ];
   }
+  if (canBecomeTrader(b)) {
+    return [{ label: "Turn into a Day Trader (stops counting as a lab for the rocket)", disabled: isBusy(b),
+      run: () => { b.trader = b.level; tallyBuildings(); toast(`Your lab is now a Day Trader: each level earns ${formatNumber(TRADER_INCOME)}/s.`); } }];
+  }
   if (b.type === "station" && b.level >= ROCKET_STATION_LEVEL) {
     return [{ label: "Turn into a rocket launch site", danger: true, disabled: isBusy(b), run: () => { convertToRocket(b); toast("Your station is now a launch site."); } }];
   }
@@ -3007,7 +3016,8 @@ function describeBuilding(b) {
   const paid = gain * MINE_PAID_NOW, stored = gain - paid;
   const more = `+${formatNumber(paid)} swizz/s, plus ${formatNumber(stored)}/s more if a train collects`;
   if (b.branch === "lab") {
-    const next = b.level <= 50 ? `Becomes a Day Trader at level 51` : `Top tier reached`;
+    const next = b.trader ? `Top tier reached`
+      : b.level < TRADER_LEVEL ? `Can become a Day Trader at level ${TRADER_LEVEL}` : `Can become a Day Trader now`;
     return [now, `Next level: ${more}. ${next}`];
   }
   const dig = b.level < MINE_CHOICE_LEVEL ? `Choose its future at level ${MINE_CHOICE_LEVEL}` : `Reaches the core at level ${CORE_LEVEL}`;
@@ -3995,7 +4005,7 @@ function drawBuilding(b, time) {
   else if (b.type === "silo") drawSiloArt(b, time, color);
   else if (b.type === "rocket") drawRocketArt(b, time);
   else if (b.branch !== "lab") drawMineArt(b, time, color);
-  else if (b.level <= 50) drawLabArt(b, time, color);
+  else if (!b.trader) drawLabArt(b, time, color);
   else drawTraderArt(b, time, color);
 
   if (isBusy(b)) {                                  // construction progress bar
