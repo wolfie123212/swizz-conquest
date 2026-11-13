@@ -2147,14 +2147,14 @@ function tallyBuildings() {
   for (let id = 1; id < nations.length; id++) {
     const n = nations[id];
     n.cityLevels = n.mineLevels = n.stationLevels = n.portLevels = n.samLevels = n.fortLevels = n.siloLevels = 0;
-    n.mineIncome = n.uraniumRate = n.cityMaxPop = 0;
+    n.mineIncome = n.uraniumRate = n.cityMaxPop = n.cityGrowthLevels = 0;
   }
   for (const b of buildings) {
     const n = nations[owner[b.tile]];
     if (!n || b.type === "rocket") continue;
     n[b.type + "Levels"] += b.level + (b.upgrading ? 1 : 0);
     if (!isBuilt(b)) continue;
-    if (b.type === "city") n.cityMaxPop += cityMaxPop(b);
+    if (b.type === "city") { n.cityMaxPop += cityMaxPop(b); n.cityGrowthLevels += b.level; }
     if (b.type !== "mine") continue;
     n.mineIncome += mineIncome(b);
     if (b.uranium && b.branch !== "lab" && b.level >= URANIUM_MINE_LEVEL) {
@@ -2532,7 +2532,7 @@ function tick() {
     if (!n.alive) continue;
     const traitor = n.traitorUntil > gameTime ? TRAITOR_PENALTY : 1;
     n.maxPop = BASE_MAX_POP + n.cityMaxPop;
-    const rate = GROWTH_RATE + n.cityLevels * CITY_GROWTH_RATE;
+    const rate = GROWTH_RATE + (n.cityGrowthLevels || 0) * CITY_GROWTH_RATE;
     n.growth = (rate * n.pop + GROWTH_BASE + GROWTH_PER_TILE * n.tiles) * (1 - n.pop / n.maxPop);
     if (n.growth > 0) n.growth *= traitor;
     n.pop = Math.max(0, n.pop + n.growth * DT);
@@ -2961,8 +2961,8 @@ function describeBuilding(b) {
   if (b.type === "city") {
     const next = b.level < CITY_HOUSE_LEVEL ? `Becomes a Town at level ${CITY_HOUSE_LEVEL}`
       : b.level < CITY_SKYSCRAPER_LEVEL ? `Becomes a Metropolis at level ${CITY_SKYSCRAPER_LEVEL}` : `Top stage reached`;
-    return [`+${formatNumber(cityMaxPop(b))} max population, +${(b.level * CITY_GROWTH_RATE * 100).toFixed(1)}% growth`,
-      `Each level adds ${formatNumber(CITY_MAX_POP)}. ${b.level < CITY_CHEAP_LEVELS
+    return [`+${formatNumber(cityMaxPop(b))} max population, ${Math.round(b.level * CITY_GROWTH_RATE / GROWTH_RATE * 100)}% faster growth`,
+      `Each level adds ${formatNumber(CITY_MAX_POP)} and ${Math.round(CITY_GROWTH_RATE / GROWTH_RATE * 100)}% growth. ${b.level < CITY_CHEAP_LEVELS
         ? `Upgrading is cheaper than a new city until level ${CITY_CHEAP_LEVELS}.`
         : `Past level ${CITY_CHEAP_LEVELS} a new city is better value.`} ${next}`];
   }
@@ -3002,14 +3002,17 @@ function describeBuilding(b) {
   const rate = mineIncome(b);
   const now = `+${formatNumber(rate * MINE_PAID_NOW)} swizz/s now, ${formatNumber(b.stock)} waiting for a train`;
   if (needsMineChoice(b)) return [now, `Your mine has a choice: dig on for the core, or become a lab that earns much more`];
+  // Only part of a mine's output is paid at once; the rest waits for a train to collect it.
   const gain = mineIncome({ ...b, level: b.level + 1 }) - rate;
+  const paid = gain * MINE_PAID_NOW, stored = gain - paid;
+  const more = `+${formatNumber(paid)} swizz/s, plus ${formatNumber(stored)}/s more if a train collects`;
   if (b.branch === "lab") {
     const next = b.level <= 50 ? `Becomes a Day Trader at level 51` : `Top tier reached`;
-    return [now, `Next level earns ${formatNumber(gain)} more. ${next}`];
+    return [now, `Next level: ${more}. ${next}`];
   }
   const dig = b.level < MINE_CHOICE_LEVEL ? `Choose its future at level ${MINE_CHOICE_LEVEL}` : `Reaches the core at level ${CORE_LEVEL}`;
   const ore = !b.uranium ? "" : b.level >= URANIUM_MINE_LEVEL ? " Digs uranium." : ` Digs uranium at level ${URANIUM_MINE_LEVEL}.`;
-  return [now, `Next level digs ${formatNumber(gain)} more swizz/s. ${dig}.${ore}`];
+  return [now, `Next level: ${more}. ${dig}.${ore}`];
 }
 
 function updateBuildUi() {
