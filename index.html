@@ -482,16 +482,21 @@ const BOT_MAX_MINE_LEVELS = 6;  // bots want this many mine levels, plus one a m
 const BOT_ALLIANCE_CHANCE = 0.02; // chance per think that a bot allies with another bot
 const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a missile
 
-/* Difficulty, picked at the start. Each number multiplies the bot settings above.
-   economy: how fast bots grow people and earn swizz
-   aggression: how often they start wars        rest: how long they wait between waves
+/* Difficulty, picked at the start. Every level plays by exactly the same rules:
+   no bot ever grows, earns or fights better than you. Only how well they think changes.
+   think: how long they take to react (x their normal thinking time)
+   aggression: how often they pick fights   rest: how long they wait between waves
    bravery: how big a nation they dare attack   fire: how often they shoot missiles
-   waveCap: the most troops in one wave, as a share of the defender's population */
+   waveCap: the most troops in one wave, as a share of the defender's population
+   plan: "simple"  - buys in a muddled order, picks random targets, never worries about defence
+         "normal"  - a sensible shopping list, random weaker targets
+         "smart"   - plays the real strategy: see botThink, smartWarTarget, botDefend and botFire */
 const DIFFICULTIES = {
-  easy:   { name: "Easy",   economy: 0.75, aggression: 0.5, rest: 1.6, bravery: 0.8,  fire: 0.5, waveCap: 1.0 },
-  medium: { name: "Medium", economy: 1,    aggression: 1,   rest: 1,   bravery: 1,    fire: 1,   waveCap: 1.5 },
-  hard:   { name: "Hard",   economy: 1.3,  aggression: 1.6, rest: 0.6, bravery: 1.15, fire: 1.5, waveCap: 2.5 },
+  easy:   { name: "Easy",   think: 1.4, aggression: 0.6, rest: 1.5, bravery: 0.8, fire: 0.6, waveCap: 1.0, plan: "simple" },
+  medium: { name: "Medium", think: 1,   aggression: 1,   rest: 1,   bravery: 1,   fire: 1,   waveCap: 1.5, plan: "normal" },
+  hard:   { name: "Hard",   think: 0.6, aggression: 1,   rest: 0.8, bravery: 1.1, fire: 1.3, waveCap: 3,   plan: "smart" },
 };
+const SMART_KEEP = 0.45;        // smart bots keep their people near this share of max, where growth is fastest
 let difficulty = DIFFICULTIES[localStorage.getItem("swizzDifficulty")] || DIFFICULTIES.medium;
 const START_RADIUS = 5;       // size in tiles of a nation's starting land
 const TICKS_PER_SECOND = 10;
@@ -801,7 +806,9 @@ function placeBots(playerSpot) {
     }
     placed.push(spot);
     const [name, color, glyph] = BOT_DATA[b];
-    claimStartingLand(createNation(name, color, glyph, false), spot);   // bare land, just like yours
+    const bot = createNation(name, color, glyph, false);
+    bot.skill = difficulty;
+    claimStartingLand(bot, spot);   // bare land, just like yours
   }
 }
 
@@ -1855,7 +1862,7 @@ function randomFrom(list) {
 /* Bots go for weaker nations, but don't all gang up on the same one. */
 function canPickOn(bot, targetId) {
   const target = nations[targetId];
-  const bravery = difficulty.bravery * (bot.pop > bot.maxPop * .9 ? BOT_FULL_BRAVERY : bot.landLeft ? BOT_BRAVERY : BOT_LATE_BRAVERY);
+  const bravery = bot.skill.bravery * (bot.pop > bot.maxPop * .9 ? BOT_FULL_BRAVERY : bot.landLeft ? BOT_BRAVERY : BOT_LATE_BRAVERY);
   const attackers = [...attacks, ...boats].filter(a => a.target === targetId && a.attacker !== bot.id).length;
   return target.alive && !areAllies(bot.id, targetId) && target.pop < bot.pop * bravery && attackers < BOT_MAX_PILE_ON;
 }
@@ -1863,12 +1870,14 @@ function canPickOn(bot, targetId) {
 function botThink(bot) {
   bot.thinkTimer -= DT;
   if (bot.thinkTimer > 0) return;
-  bot.thinkTimer = (bot.style === "expander" ? 3 : 5) + Math.random() * 5;
+  const skill = bot.skill, smart = skill.plan === "smart";
+  bot.thinkTimer = skill.think * ((bot.style === "expander" ? 3 : 5) + Math.random() * 5);
   if (Math.random() < BOT_BUY_CHANCE) {
     for (let k = 0; k < BOT_BUYS_PER_THINK && botBuild(bot); k++);
   }
   botDiplomacy(bot);
   botFire(bot);
+  if (smart && botDefend(bot)) return;
   if (bot.pop < bot.maxPop * .15) return;
 
   // Everyone turns on a nation trying to leave the planet.
@@ -1883,7 +1892,8 @@ function botThink(bot) {
   }
 
   // Builders stay home early on, building and growing troops, and only spill out when nearly full.
-  if (bot.style === "builder" && gameTime < BOT_BUILDER_WAIT && bot.pop < bot.maxPop * .85) return;
+  // (Smart builders know empty land is cheap and only wait a little.)
+  if (bot.style === "builder" && gameTime < BOT_BUILDER_WAIT * (smart ? .3 : 1) && bot.pop < bot.maxPop * .85) return;
 
   const touching = [...borders[bot.id]].map(key => ({ target: key >> 8, mass: key & 255 }));
   const free = touching.filter(t => t.target === FREE);
@@ -1894,11 +1904,12 @@ function botThink(bot) {
   // Only one war wave at a time, then a rest, so a huge army comes in waves you can answer.
   const resting = gameTime < (bot.warRestUntil || 0)
     || attacks.some(a => a.attacker === bot.id && a.target !== FREE);
-  if (!resting && rivals.length && Math.random() < difficulty.aggression * (free.length ? BOT_AGGRESSION : BOT_LATE_AGGRESSION)) {
+  if (smart) {
+    if (!resting) order = smartWarTarget(bot, touching, rivals, free.length > 0);
+  } else if (!resting && rivals.length && Math.random() < skill.aggression * (free.length ? BOT_AGGRESSION : BOT_LATE_AGGRESSION)) {
     order = randomFrom(rivals);
-  } else if (free.length) {
-    order = randomFrom(free);
   }
+  if (!order && free.length) order = randomFrom(free);
   if (!order) {
     if (Math.random() < BOT_BOAT_CHANCE) botSendBoat(bot);
     return;
@@ -1907,12 +1918,51 @@ function botThink(bot) {
   const aim = order.target === FREE ? bot : nations[order.target];
   let troops;
   if (order.target === FREE) {
-    troops = bot.pop * (bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1);
+    troops = smart ? bot.pop * (.25 + Math.random() * .1)   // land is cheap and pays forever: grab it fast
+      : bot.pop * (bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1);
   } else {
-    troops = Math.min(bot.pop * (BOT_WAR_SHARE + Math.random() * .08), aim.pop * difficulty.waveCap);
-    bot.warRestUntil = gameTime + BOT_WAR_REST * difficulty.rest * (.7 + Math.random() * .6);
+    // Smart bots spend only what's above the fast-growth point, so their nation keeps growing at full speed.
+    const share = smart ? Math.max(0, bot.pop - bot.maxPop * SMART_KEEP) : bot.pop * (BOT_WAR_SHARE + Math.random() * .08);
+    troops = Math.min(share, aim.pop * skill.waveCap);
+    bot.warRestUntil = gameTime + BOT_WAR_REST * skill.rest * (.7 + Math.random() * .6);
   }
   startAttack(bot, order.target, order.mass, troops, aim.sumX / aim.tiles, aim.sumY / aim.tiles);
+}
+
+/* How a smart bot picks a war. Taking a tile costs the people defending it, so
+   thinly spread nations (few people per tile, often because they're busy fighting
+   someone else) are the cheapest to take. Anyone close to winning gets attacked
+   first, whatever the cost. It only fights with troops it can spare. */
+function smartWarTarget(bot, touching, rivals, landLeft) {
+  const spare = bot.pop - bot.maxPop * SMART_KEEP;
+  if (spare <= 0) return null;
+  const density = t => nations[t.target].pop / Math.max(1, nations[t.target].tiles);
+  const affordable = t => spare > 20 * (FREE_LAND_COST + density(t));   // enough to take at least ~20 tiles
+
+  const standings = raceStandings();
+  const leaders = new Set(["land", "core", "space"].flatMap(k => standings[k].filter(s => s.value > .5).map(s => s.n.id)));
+  const leader = touching.find(t => t.target !== FREE && leaders.has(t.target) && !areAllies(bot.id, t.target) && affordable(t));
+  if (leader) return leader;
+
+  const cheapest = rivals.filter(affordable).sort((a, b) => density(a) - density(b))[0];
+  if (!cheapest) return null;
+  // While there's still empty land, only fight when it's nearly as cheap as settling.
+  if (landLeft && density(cheapest) > FREE_LAND_COST * 1.5) return null;
+  return cheapest;
+}
+
+/* Smart bots meet a big invasion at the border with an army of their own: the two
+   armies cancel out one for one, so they lose no land, and anything left over pushes back. */
+function botDefend(bot) {
+  for (const a of attacks) {
+    if (a.target !== bot.id || a.troops < bot.pop * .1) continue;
+    if (attacks.some(o => o.attacker === bot.id && o.target === a.attacker && o.mass === a.mass)) continue;   // already answering
+    if (!borders[bot.id].has(borderKey(a.attacker, a.mass))) continue;
+    const enemy = nations[a.attacker];
+    startAttack(bot, a.attacker, a.mass, Math.min(a.troops * 1.1, bot.pop * .5), enemy.sumX / enemy.tiles, enemy.sumY / enemy.tiles);
+    return true;
+  }
+  return false;
 }
 
 /* With nothing left to do on land, sail at empty land or a weaker nation elsewhere. */
@@ -1924,8 +1974,8 @@ function botSendBoat(bot) {
     if (holder !== FREE && (!canPickOn(bot, holder) || gameTime < (bot.warRestUntil || 0))) continue;
     let troops = bot.pop * (.1 + Math.random() * .15);
     if (holder !== FREE) {
-      troops = Math.min(troops, nations[holder].pop * difficulty.waveCap);
-      bot.warRestUntil = gameTime + BOT_WAR_REST * difficulty.rest;
+      troops = Math.min(troops, nations[holder].pop * bot.skill.waveCap);
+      bot.warRestUntil = gameTime + BOT_WAR_REST * bot.skill.rest;
     }
     launchBoat(bot, tile, troops);
     return;
@@ -1947,9 +1997,15 @@ function botFire(bot) {
   if (!kind) return;
   const rocket = launches.find(l => l.nation !== bot.id && !areAllies(bot.id, l.nation));
   if (rocket) { launchMissile(bot, silo, kind, rocket.site.tile); return; }
-  if (Math.random() > BOT_FIRE_CHANCE * difficulty.fire) return;
+  if (Math.random() > BOT_FIRE_CHANCE * bot.skill.fire) return;
   const targets = buildings.filter(b => owner[b.tile] !== bot.id && !canTrade(bot.id, owner[b.tile]));
-  if (targets.length) launchMissile(bot, silo, kind, randomFrom(targets).tile);
+  if (!targets.length) return;
+  if (bot.skill.plan !== "smart") return launchMissile(bot, silo, kind, randomFrom(targets).tile);
+  // Smart bots hit the most valuable building that no loaded SAM is guarding.
+  const guarded = b => buildings.some(s => s.type === "sam" && owner[s.tile] === owner[b.tile] && isBuilt(s)
+    && s.charges > 0 && tileDistance(s.tile, b.tile) <= samRadius(s));
+  const value = b => (importance(b) + 1) * (guarded(b) ? .2 : 1);
+  launchMissile(bot, silo, kind, targets.sort((a, b) => value(b) - value(a))[0].tile);
 }
 
 const ownsCoast = bot => coastTiles.some(i => owner[i] === bot.id);
@@ -2008,6 +2064,8 @@ function guardSpot(bot, type, roomy) {
 /* A bot gets nervous when a rival that isn't its ally looks dangerous: much
    bigger than it, holding nukes, or getting close to winning. */
 function isNervous(bot) {
+  if (bot.skill.plan === "simple") return false;   // easy bots never think about defence
+  if (bot.skill.plan === "smart" && attacks.some(a => a.target === bot.id && a.troops > bot.pop * .2)) return true;
   if (gameTime < BOT_NERVOUS_AFTER) return false;
   const standings = raceStandings();
   const nearlyWon = new Set(["land", "core", "space"].flatMap(k => standings[k].filter(s => s.value > .6).map(s => s.n.id)));
@@ -2060,6 +2118,7 @@ function botBuild(bot) {
   if (gameTime > 180 && bot.samLevels < 1 + minutes / 6) wishes.push("sam");
   if (gameTime > 240 && bot.siloLevels < 1) wishes.push("silo");
 
+  if (bot.skill.plan === "simple") wishes.sort(() => Math.random() - .5);   // easy bots shop in a muddled order
   for (const type of wishes) {
     if (bot.swizz < priceOf(type, bot)) continue;    // can't afford this yet: try something cheaper
     const existing = own(type).filter(b => !isBusy(b));
@@ -2555,9 +2614,9 @@ function tick() {
     n.maxPop = BASE_MAX_POP + n.cityMaxPop;
     const rate = GROWTH_RATE + (n.cityGrowthLevels || 0) * CITY_GROWTH_RATE;
     n.growth = (rate * n.pop + GROWTH_BASE + GROWTH_PER_TILE * n.tiles) * (1 - n.pop / n.maxPop);
-    if (n.growth > 0) n.growth *= traitor * (n.isPlayer ? 1 : difficulty.economy);
+    if (n.growth > 0) n.growth *= traitor;
     n.pop = Math.max(0, n.pop + n.growth * DT);
-    n.income = (n.tiles * SWIZZ_PER_TILE + n.mineIncome * MINE_PAID_NOW) * traitor * (n.isPlayer ? 1 : difficulty.economy);
+    n.income = (n.tiles * SWIZZ_PER_TILE + n.mineIncome * MINE_PAID_NOW) * traitor;
     n.swizz += n.income * DT;
     n.uranium += n.uraniumRate * DT;
   }
