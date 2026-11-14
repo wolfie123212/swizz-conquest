@@ -488,13 +488,14 @@ const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a mi
    aggression: how often they pick fights   rest: how long they wait between waves
    bravery: how big a nation they dare attack   fire: how often they shoot missiles
    waveCap: the most troops in one wave, as a share of the defender's population
+   defends: meets big invasions at the border with its own army (see botDefend)
    plan: "simple"  - buys in a muddled order, picks random targets, never worries about defence
          "normal"  - a sensible shopping list, random weaker targets
          "smart"   - plays the real strategy: see botThink, smartWarTarget, botDefend and botFire */
 const DIFFICULTIES = {
-  easy:   { name: "Easy",   think: 1.4, aggression: 0.6, rest: 1.5, bravery: 0.8, fire: 0.6, waveCap: 1.0, plan: "simple" },
-  medium: { name: "Medium", think: 1,   aggression: 1,   rest: 1,   bravery: 1,   fire: 1,   waveCap: 1.5, plan: "normal" },
-  hard:   { name: "Hard",   think: 0.6, aggression: 1,   rest: 0.8, bravery: 1.1, fire: 1.3, waveCap: 3,   plan: "smart" },
+  easy:   { name: "Easy",   think: 1.4,  aggression: 0.6, rest: 1.5, bravery: 0.8,  fire: 0.6, waveCap: 1.0, defends: false, plan: "simple" },
+  medium: { name: "Medium", think: 0.85, aggression: 1.2, rest: 0.9, bravery: 1.05, fire: 1.1, waveCap: 2,   defends: true,  plan: "normal" },
+  hard:   { name: "Hard",   think: 0.6,  aggression: 1,   rest: 0.8, bravery: 1.1,  fire: 1.3, waveCap: 3,   defends: true,  plan: "smart" },
 };
 const SMART_KEEP = 0.45;        // smart bots keep their people near this share of max, where growth is fastest
 let difficulty = DIFFICULTIES[localStorage.getItem("swizzDifficulty")] || DIFFICULTIES.medium;
@@ -1877,7 +1878,7 @@ function botThink(bot) {
   }
   botDiplomacy(bot);
   botFire(bot);
-  if (smart && botDefend(bot)) return;
+  if (skill.defends && botDefend(bot)) return;
   if (bot.pop < bot.maxPop * .15) return;
 
   // Everyone turns on a nation trying to leave the planet.
