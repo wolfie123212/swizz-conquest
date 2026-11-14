@@ -22,6 +22,10 @@
   #swatches { display: flex; gap: 6px; }
   .colorChoice { width: 24px; height: 24px; padding: 0; border: 3px solid #160e26; outline: 2px solid transparent; cursor: pointer; }
   .colorChoice.picked { outline-color: #ffffff; }
+  #difficultyPicker { position: fixed; top: 160px; left: 50%; transform: translateX(-50%); display: flex; align-items: center;
+    gap: 8px; padding: 6px 10px; white-space: nowrap; }
+  .levelChoice { font: inherit; font-size: 12px; color: #c9b8ec; background: #24183d; border: 2px solid #5b4685; padding: 4px 8px; cursor: pointer; }
+  .levelChoice.picked { color: #160e26; background: #ffd166; border-color: #ffffff; }
   #clockBar { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: none; align-items: center;
     gap: 10px; padding: 4px 5px 4px 10px; }
   #clock { font-size: 16px; min-width: 56px; text-align: center; }
@@ -207,6 +211,7 @@
 
 <div id="banner" class="panel">Choose a starting location</div>
 <div id="colorPicker" class="panel"><span>Your colour</span><div id="swatches"></div></div>
+<div id="difficultyPicker" class="panel"><span>Difficulty</span><div id="levels" style="display:flex;gap:6px"></div></div>
 <div id="clockBar" class="panel"><span id="clock">0:00</span><button id="pauseButton" aria-label="Pause">II</button></div>
 <div id="alerts"></div>
 
@@ -459,8 +464,7 @@ const BOT_BRAVERY = 0.6;        // bots only attack nations smaller than this sh
 const BOT_LATE_BRAVERY = 1.1;   // ...or this share once there's no free land left to take...
 const BOT_FULL_BRAVERY = 1.25;  // ...or this share when their population is nearly at its max
 const BOT_WAR_REST = 30;        // after attacking a nation, a bot waits this many seconds before attacking any nation again
-const BOT_WAR_SHARE = 0.12;     // bots send 12-20% of their people at a nation (land grabs use more)...
-const BOT_WAVE_CAP = 1.5;       // ...but never more than 1.5x the defender's population, so big armies come in fair-sized waves
+const BOT_WAR_SHARE = 0.12;     // bots send 12-20% of their people at a nation (land grabs use more), capped by difficulty.waveCap
 const BOT_MAX_PILE_ON = 2;      // bots leave a nation alone once this many are already attacking it
 const BOT_BOAT_CHANCE = 0.3;    // chance a bot with nothing to do on land sends a boat instead
 const BOT_BUY_CHANCE = 0.9;     // chance a bot goes shopping each time it thinks...
@@ -477,6 +481,18 @@ const BOT_MAX_STOPS = 3;        // bot stations and ports only serve their neare
 const BOT_MAX_MINE_LEVELS = 6;  // bots want this many mine levels, plus one a minute (more if digging for the core)
 const BOT_ALLIANCE_CHANCE = 0.02; // chance per think that a bot allies with another bot
 const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a missile
+
+/* Difficulty, picked at the start. Each number multiplies the bot settings above.
+   economy: how fast bots grow people and earn swizz
+   aggression: how often they start wars        rest: how long they wait between waves
+   bravery: how big a nation they dare attack   fire: how often they shoot missiles
+   waveCap: the most troops in one wave, as a share of the defender's population */
+const DIFFICULTIES = {
+  easy:   { name: "Easy",   economy: 0.75, aggression: 0.5, rest: 1.6, bravery: 0.8,  fire: 0.5, waveCap: 1.0 },
+  medium: { name: "Medium", economy: 1,    aggression: 1,   rest: 1,   bravery: 1,    fire: 1,   waveCap: 1.5 },
+  hard:   { name: "Hard",   economy: 1.3,  aggression: 1.6, rest: 0.6, bravery: 1.15, fire: 1.5, waveCap: 2.5 },
+};
+let difficulty = DIFFICULTIES[localStorage.getItem("swizzDifficulty")] || DIFFICULTIES.medium;
 const START_RADIUS = 5;       // size in tiles of a nation's starting land
 const TICKS_PER_SECOND = 10;
 const DT = 1 / TICKS_PER_SECOND;
@@ -1839,7 +1855,7 @@ function randomFrom(list) {
 /* Bots go for weaker nations, but don't all gang up on the same one. */
 function canPickOn(bot, targetId) {
   const target = nations[targetId];
-  const bravery = bot.pop > bot.maxPop * .9 ? BOT_FULL_BRAVERY : bot.landLeft ? BOT_BRAVERY : BOT_LATE_BRAVERY;
+  const bravery = difficulty.bravery * (bot.pop > bot.maxPop * .9 ? BOT_FULL_BRAVERY : bot.landLeft ? BOT_BRAVERY : BOT_LATE_BRAVERY);
   const attackers = [...attacks, ...boats].filter(a => a.target === targetId && a.attacker !== bot.id).length;
   return target.alive && !areAllies(bot.id, targetId) && target.pop < bot.pop * bravery && attackers < BOT_MAX_PILE_ON;
 }
@@ -1878,7 +1894,7 @@ function botThink(bot) {
   // Only one war wave at a time, then a rest, so a huge army comes in waves you can answer.
   const resting = gameTime < (bot.warRestUntil || 0)
     || attacks.some(a => a.attacker === bot.id && a.target !== FREE);
-  if (!resting && rivals.length && Math.random() < (free.length ? BOT_AGGRESSION : BOT_LATE_AGGRESSION)) {
+  if (!resting && rivals.length && Math.random() < difficulty.aggression * (free.length ? BOT_AGGRESSION : BOT_LATE_AGGRESSION)) {
     order = randomFrom(rivals);
   } else if (free.length) {
     order = randomFrom(free);
@@ -1893,8 +1909,8 @@ function botThink(bot) {
   if (order.target === FREE) {
     troops = bot.pop * (bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1);
   } else {
-    troops = Math.min(bot.pop * (BOT_WAR_SHARE + Math.random() * .08), aim.pop * BOT_WAVE_CAP);
-    bot.warRestUntil = gameTime + BOT_WAR_REST * (.7 + Math.random() * .6);
+    troops = Math.min(bot.pop * (BOT_WAR_SHARE + Math.random() * .08), aim.pop * difficulty.waveCap);
+    bot.warRestUntil = gameTime + BOT_WAR_REST * difficulty.rest * (.7 + Math.random() * .6);
   }
   startAttack(bot, order.target, order.mass, troops, aim.sumX / aim.tiles, aim.sumY / aim.tiles);
 }
@@ -1908,8 +1924,8 @@ function botSendBoat(bot) {
     if (holder !== FREE && (!canPickOn(bot, holder) || gameTime < (bot.warRestUntil || 0))) continue;
     let troops = bot.pop * (.1 + Math.random() * .15);
     if (holder !== FREE) {
-      troops = Math.min(troops, nations[holder].pop * BOT_WAVE_CAP);
-      bot.warRestUntil = gameTime + BOT_WAR_REST;
+      troops = Math.min(troops, nations[holder].pop * difficulty.waveCap);
+      bot.warRestUntil = gameTime + BOT_WAR_REST * difficulty.rest;
     }
     launchBoat(bot, tile, troops);
     return;
@@ -1931,7 +1947,7 @@ function botFire(bot) {
   if (!kind) return;
   const rocket = launches.find(l => l.nation !== bot.id && !areAllies(bot.id, l.nation));
   if (rocket) { launchMissile(bot, silo, kind, rocket.site.tile); return; }
-  if (Math.random() > BOT_FIRE_CHANCE) return;
+  if (Math.random() > BOT_FIRE_CHANCE * difficulty.fire) return;
   const targets = buildings.filter(b => owner[b.tile] !== bot.id && !canTrade(bot.id, owner[b.tile]));
   if (targets.length) launchMissile(bot, silo, kind, randomFrom(targets).tile);
 }
@@ -2539,9 +2555,9 @@ function tick() {
     n.maxPop = BASE_MAX_POP + n.cityMaxPop;
     const rate = GROWTH_RATE + (n.cityGrowthLevels || 0) * CITY_GROWTH_RATE;
     n.growth = (rate * n.pop + GROWTH_BASE + GROWTH_PER_TILE * n.tiles) * (1 - n.pop / n.maxPop);
-    if (n.growth > 0) n.growth *= traitor;
+    if (n.growth > 0) n.growth *= traitor * (n.isPlayer ? 1 : difficulty.economy);
     n.pop = Math.max(0, n.pop + n.growth * DT);
-    n.income = (n.tiles * SWIZZ_PER_TILE + n.mineIncome * MINE_PAID_NOW) * traitor;
+    n.income = (n.tiles * SWIZZ_PER_TILE + n.mineIncome * MINE_PAID_NOW) * traitor * (n.isPlayer ? 1 : difficulty.economy);
     n.swizz += n.income * DT;
     n.uranium += n.uraniumRate * DT;
   }
@@ -2773,10 +2789,22 @@ for (const color of PLAYER_COLORS) {
   document.getElementById("swatches").append(choice);
 }
 
+for (const [key, level] of Object.entries(DIFFICULTIES)) {
+  const choice = element("button", "levelChoice" + (level === difficulty ? " picked" : ""));
+  choice.textContent = level.name;
+  choice.addEventListener("click", () => {
+    difficulty = level;
+    localStorage.setItem("swizzDifficulty", key);   // remembered for next game
+    for (const other of document.querySelectorAll(".levelChoice")) other.classList.toggle("picked", other === choice);
+  });
+  document.getElementById("levels").append(choice);
+}
+
 function chooseStart(tile) {
   if (tile < 0 || isWater(tile)) return toast("You can't start in the ocean. Pick a spot on land.");
   player = createNation("Your Nation", playerColor, "★", true);
   document.getElementById("colorPicker").style.display = "none";
+  document.getElementById("difficultyPicker").style.display = "none";
   claimStartingLand(player, tile);
   phase = "playing";
   placeBots(tile);
