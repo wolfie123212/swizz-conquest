@@ -1,8 +1,8 @@
 # Swizz Conquest: saved ideas
 
-Ideas saved for later. None of these are built yet.
+Ideas saved for later. Ideas 1–3 are now built (Build Phase mode, delete, Hard-mode capture damage). Idea 4 is still to do.
 
-## 1. "Build Phase" game mode
+## 1. "Build Phase" game mode (DONE)
 The first 5 minutes are a peaceful building phase.
 - Nobody can attack another nation: no troops, boats, missiles or submarine captures. Bots follow the same rule.
 - Empty land can still be claimed, and everything can be built and upgraded.
@@ -13,7 +13,7 @@ The first 5 minutes are a peaceful building phase.
   - Should the 5 minutes be adjustable?
 - Needs a game-mode choice on the start screen, next to colour and difficulty.
 
-## 2. Delete buildings (all modes)
+## 2. Delete buildings (DONE: deletable while being built; not during a rocket countdown)
 - Delete one of your own buildings and get back 50% of what it's worth.
 - "Worth" is everything spent on it: the build price plus every upgrade. The game will need to start keeping track of that per building.
 - Ask "Are you sure?" first, showing the refund amount.
@@ -23,7 +23,7 @@ The first 5 minutes are a peaceful building phase.
   - Should a deleted mine's deposit come back? (Suggestion: no, it's been dug out.)
   - Do bots use it too? (Suggestion: no, to start with.)
 
-## 3. Hard mode: captured buildings arrive damaged
+## 3. Hard mode: captured buildings arrive damaged (DONE: lose 25% of levels rounded down, level 1 stays)
 - On Hard, when an attack takes over a building, it loses levels because it was damaged in the fighting.
 - It's the same rule for everyone, so your buildings lose levels when bots capture them too.
 - To decide:

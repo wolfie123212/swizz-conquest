@@ -17,15 +17,19 @@
 
   .panel { background: #160e26; border: 3px solid #5b4685; box-shadow: 3px 3px 0 rgba(0, 0, 0, .6); }
 
-  #colorPicker { position: fixed; top: 112px; left: 50%; transform: translateX(-50%); display: flex; align-items: center;
-    gap: 10px; padding: 6px 10px; white-space: nowrap; }
-  #swatches { display: flex; gap: 6px; }
+  /* The lobby: colour, difficulty and game mode before the game starts */
+  #lobby { z-index: 4; }
+  #lobbyBox { min-width: 420px; max-width: 520px; }
+  #lobbyBox h1 { font-size: 32px; margin-bottom: 18px; color: #ffd166; }
+  .lobbyRow { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; text-align: left; }
+  .lobbyLabel { width: 90px; flex: none; color: #b3a4d6; white-space: nowrap; }
+  #swatches, #levels, #modes { display: flex; gap: 6px; flex-wrap: wrap; }
   .colorChoice { width: 24px; height: 24px; padding: 0; border: 3px solid #160e26; outline: 2px solid transparent; cursor: pointer; }
   .colorChoice.picked { outline-color: #ffffff; }
-  #difficultyPicker { position: fixed; top: 160px; left: 50%; transform: translateX(-50%); display: flex; align-items: center;
-    gap: 8px; padding: 6px 10px; white-space: nowrap; }
-  .levelChoice { font: inherit; font-size: 12px; color: #c9b8ec; background: #24183d; border: 2px solid #5b4685; padding: 4px 8px; cursor: pointer; }
+  .levelChoice { font: inherit; font-size: 12px; color: #c9b8ec; background: #24183d; border: 2px solid #5b4685; padding: 5px 9px; cursor: pointer; }
   .levelChoice.picked { color: #160e26; background: #ffd166; border-color: #ffffff; }
+  .lobbyAbout { margin: -6px 0 16px 102px; text-align: left; color: #8b7fa6; min-height: 32px; line-height: 1.5; }
+  #startGame { font-size: 16px; padding: 10px 28px; }
   #clockBar { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: none; align-items: center;
     gap: 10px; padding: 4px 5px 4px 10px; }
   #clock { font-size: 16px; min-width: 56px; text-align: center; }
@@ -46,10 +50,11 @@
   .menuButton:hover { outline: 3px solid #ffd166; }
   .menuHint { margin-top: 12px; color: #8b7fa6; }
 
+  #banner.war { font-size: 32px; color: #ff6b6b; border-color: #ff6b6b; }
   #banner { position: fixed; top: 58px; left: 50%; transform: translateX(-50%);
     padding: 10px 18px; font-size: 16px; white-space: nowrap; pointer-events: none; }
 
-  /* Bottom left: a small feed of notifications above the radar */
+  /* Bottom left: a small feed of notifications */
   #bottomLeft { position: fixed; left: 14px; bottom: 14px; display: flex; flex-direction: column; align-items: flex-start;
     gap: 6px; pointer-events: none; }
   #bottomLeft > * { pointer-events: auto; }
@@ -57,6 +62,8 @@
   .note { max-width: 260px; padding: 2px 5px; font-size: 8px; line-height: 1.5; background: rgba(22, 14, 38, .88); border-left: 2px solid #5b4685;
     color: #e4dcf7; animation: noteIn .15s steps(3); transition: opacity .5s steps(3); }
   .note.gone { opacity: 0; }
+  .note.jump { pointer-events: auto; cursor: pointer; border-left-color: #ff6b6b; color: #ffd0d0; }
+  .note.jump:hover { background: rgba(58, 44, 87, .95); }
   @keyframes noteIn { from { transform: translateX(-12px); opacity: 0; } }
 
   /* Bottom-right status bar */
@@ -132,18 +139,12 @@
   #wheelHint.near { top: 50px; }
   #wheelHint .bad { color: #ff9b9b; }
 
-  /* Radar: a small map of incoming attacks and missiles, bottom left */
-  #radar { padding: 4px 6px 6px; display: none; }
-  #radarTitle { color: #b3a4d6; white-space: nowrap; }
-  #radarTitle.danger { color: #ff6b6b; }
-  @media (max-width: 860px) {           /* narrow windows: stack the radar above the status bar */
+  @media (max-width: 860px) {           /* narrow windows: keep the notes above the status bar */
     #bottomLeft { bottom: 150px; }
     #leftDock { max-height: calc(100vh - 345px); }
   }
-  #radar.folded #radarMap { display: none; }
-  #radar:not(.folded) .dockHead { margin-bottom: 4px; }
-  #radarMap { position: static; display: block; width: 180px; height: 120px; image-rendering: pixelated; cursor: pointer; }
-  #race, #nationList, #nationPanel { padding: 4px 7px 6px; }
+  #raceBody { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 2px solid #3a2c57; }
+  #nationList, #nationPanel { padding: 4px 7px 6px; }
   .dockHead { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 4px;
     color: #b3a4d6; white-space: nowrap; }
   .dockHead > span { overflow: hidden; text-overflow: ellipsis; }
@@ -209,21 +210,27 @@
 <body>
 <canvas id="view"></canvas>
 
-<div id="banner" class="panel">Choose a starting location</div>
-<div id="colorPicker" class="panel"><span>Your colour</span><div id="swatches"></div></div>
-<div id="difficultyPicker" class="panel"><span>Difficulty</span><div id="levels" style="display:flex;gap:6px"></div></div>
+<div id="banner" class="panel" style="display:none">Choose a starting location</div>
+<div id="lobby" class="overlay show">
+  <div id="lobbyBox" class="panel menuBox">
+    <h1>Swizz Conquest</h1>
+    <div class="lobbyRow"><span class="lobbyLabel">Your colour</span><div id="swatches"></div></div>
+    <div class="lobbyRow"><span class="lobbyLabel">Difficulty</span><div id="levels"></div></div>
+    <div class="lobbyAbout" id="levelAbout"></div>
+    <div class="lobbyRow"><span class="lobbyLabel">Game mode</span><div id="modes"></div></div>
+    <div class="lobbyAbout" id="modeAbout"></div>
+    <div class="menuButtons"><button id="startGame" class="menuButton">Start</button></div>
+  </div>
+</div>
 <div id="clockBar" class="panel"><span id="clock">0:00</span><button id="pauseButton" aria-label="Pause">II</button></div>
 <div id="alerts"></div>
 
 <div id="countdown" class="panel"></div>
 
 <div id="leftDock">
-  <div id="race" class="panel folded">
-    <div class="dockHead"><span>Race to win</span><button class="fold" aria-label="Expand">+</button></div>
-    <div id="raceBody"></div>
-  </div>
   <div id="nationList" class="panel folded">
-    <div class="dockHead"><span>Nations</span><button class="fold" aria-label="Expand">+</button></div>
+    <div class="dockHead"><span>Nations &amp; race</span><button class="fold" aria-label="Expand">+</button></div>
+    <div id="raceBody"></div>
     <div id="nationRows"></div>
   </div>
   <div id="nationPanel" class="panel">
@@ -268,10 +275,6 @@
 
 <div id="bottomLeft">
   <div id="feed"></div>
-  <div id="radar" class="panel folded">
-    <div class="dockHead"><span id="radarTitle">Radar</span><button class="fold" aria-label="Expand">+</button></div>
-    <canvas id="radarMap" width="180" height="120"></canvas>
-  </div>
 </div>
 
 <div id="pauseMenu" class="overlay">
@@ -488,20 +491,36 @@ const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a mi
    aggression: how often they pick fights   rest: how long they wait between waves
    bravery: how big a nation they dare attack   fire: how often they shoot missiles
    waveCap: the most troops in one wave, as a share of the defender's population
+   captureDamage: share of levels a building loses when it's captured in battle (rounded down, never below 1)
    defends: meets big invasions at the border with its own army (see botDefend)
    plan: "simple"  - buys in a muddled order, picks random targets, never worries about defence
          "normal"  - a sensible shopping list, random weaker targets
          "smart"   - plays the real strategy: see botThink, smartWarTarget, botDefend and botFire */
 const DIFFICULTIES = {
-  easy:   { name: "Easy",   think: 1.4,  aggression: 0.6, rest: 1.5, bravery: 0.8,  fire: 0.6, waveCap: 1.0, defends: false, plan: "simple" },
-  medium: { name: "Medium", think: 0.85, aggression: 1.2, rest: 0.9, bravery: 1.05, fire: 1.1, waveCap: 2,   defends: true,  plan: "normal" },
-  hard:   { name: "Hard",   think: 0.6,  aggression: 1,   rest: 0.8, bravery: 1.1,  fire: 1.3, waveCap: 3,   defends: true,  plan: "smart" },
+  easy:   { name: "Easy",   think: 1.4,  aggression: 0.6, rest: 1.5, bravery: 0.8,  fire: 0.6, waveCap: 1.0, defends: false, captureDamage: 0,    plan: "simple" },
+  medium: { name: "Medium", think: 0.85, aggression: 1.2, rest: 0.9, bravery: 1.05, fire: 1.1, waveCap: 2,   defends: true,  captureDamage: 0,    plan: "normal" },
+  hard:   { name: "Hard",   think: 0.6,  aggression: 1,   rest: 0.8, bravery: 1.1,  fire: 1.3, waveCap: 3,   defends: true,  captureDamage: 0.25, plan: "smart" },
 };
+DIFFICULTIES.easy.about = "Rivals are slow, muddled and rarely start wars.";
+DIFFICULTIES.medium.about = "Rivals build sensibly, pick fights and defend their borders.";
+DIFFICULTIES.hard.about = "Rivals play the real strategy. Captured buildings lose a quarter of their levels.";
+
+/* Game modes, picked in the lobby. */
+const PEACE_SECONDS = 300;      // Build Phase: nobody can attack another nation for this long
+const GAME_MODES = {
+  classic: { name: "Classic", peace: false,
+    about: "War from the start. Win by conquest, by digging to the core, or by launching a rocket." },
+  build: { name: "Build Phase", peace: true,
+    about: "5 minutes of peace first: claim empty land, build up and make alliances. Then war begins." },
+};
+const peaceLeft = () => gameMode.peace ? Math.max(0, PEACE_SECONDS - gameTime) : 0;
+const atPeace = () => peaceLeft() > 0;
 const SMART_KEEP = 0.45;        // smart bots keep their people near this share of max, where growth is fastest
 // Some places (like shared links) block saved settings, so remembering is a bonus, never required.
 const remembered = key => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
 let difficulty = DIFFICULTIES[remembered("swizzDifficulty")] || DIFFICULTIES.medium;
+let gameMode = GAME_MODES[remembered("swizzMode")] || GAME_MODES.classic;
 const START_RADIUS = 5;       // size in tiles of a nation's starting land
 const TICKS_PER_SECOND = 10;
 const DT = 1 / TICKS_PER_SECOND;
@@ -778,6 +797,34 @@ function setOwner(i, id) {
   markDirty(i);
 }
 
+/* On Hard, a building taken in battle arrives damaged: it loses a quarter of its
+   levels, rounded down to a whole level (level 2 drops to 1), but never below level 1.
+   Anything it was building is lost too. Same rule for everyone. */
+function damageCaptured(tile, taker, loser) {
+  const share = difficulty.captureDamage;
+  if (!share) return;
+  const b = buildings.find(other => other.tile === tile);
+  if (!b || b.type === "rocket") return;
+  if (b.upgrading) { b.upgrading = false; b.buildLeft = 0; }
+  const before = b.level;
+  b.level = Math.max(1, Math.floor(before * (1 - share)));
+  if (b.level === before) return;
+  b.spent = Math.round(b.spent * b.level / before);   // it's worth less now
+  if (b.trader && b.trader > b.level) b.trader = b.level;
+  if (b.type === "sam") b.charges = Math.min(b.charges, samMaxCharges(b));
+  if (b.type === "station") {                        // one train per level
+    let extra = trains.filter(t => t.station === b).length - b.level;
+    trains = trains.filter(t => t.station !== b || extra-- <= 0);
+  }
+  if (b.type === "port") {                           // one ship per level
+    let extra = ships.filter(sh => sh.port === b && sh.thief === null).length - b.level;
+    ships = ships.filter(sh => sh.port !== b || sh.thief !== null || extra-- <= 0);
+  }
+  tallyBuildings();
+  if (taker.isPlayer) toast(`You captured a damaged ${buildingInfo(b).name}: level ${before} → ${b.level}.`, tile);
+  else if (loser.isPlayer) toast(`${taker.name} captured your ${buildingInfo(b).name}. It was damaged down to level ${b.level}.`, tile);
+}
+
 function claimStartingLand(nation, centre) {
   const cx = centre % W, cy = (centre - cx) / W;
   for (let y = cy - START_RADIUS; y <= cy + START_RADIUS; y++) {
@@ -845,6 +892,7 @@ function addTroops(attacker, target, mass, troops, aimX, aimY) {
 }
 
 function startAttack(attacker, target, mass, troops, aimX, aimY) {
+  if (target !== FREE && atPeace()) return null;     // Build Phase: no fighting yet
   troops = Math.min(troops, attacker.pop);
   if (troops < 1) return null;
   attacker.pop -= troops;
@@ -952,6 +1000,7 @@ function processAttack(attack) {
     attack.troops -= cost;
     if (defender) defender.pop = Math.max(0, defender.pop - density);
     setOwner(tile, attacker.id);
+    if (defender) damageCaptured(tile, attacker, defender);
     if (defender && defender.tiles === 0) { eliminate(defender, attacker); break; }
   }
 
@@ -1051,6 +1100,7 @@ function findSeaRoute(nation, landing) {
 
 function launchBoat(nation, tile, troops) {
   const target = owner[tile], mass = landmass[tile];
+  if (target !== FREE && atPeace()) return null;
   const x = tile % W, y = tile / W | 0;
   let landing = -1, nearest = Infinity;
   for (const c of coastTiles) {
@@ -1078,6 +1128,11 @@ function boatLands(boat) {
     addTroops(nation, boat.target, boat.mass, boat.troops, boat.aimX, boat.aimY);
     return;
   }
+  if (holder !== FREE && atPeace()) {     // someone settled the beach first, and it's still peace time: sail home
+    nation.pop += boat.troops;
+    if (nation.isPlayer) toast(`${nations[holder].name} settled that beach first. It's peace time, so your troops came home.`);
+    return;
+  }
   const defender = holder === FREE ? null : nations[holder];
   const density = defender ? defender.pop / defender.tiles : 0;
   if (boat.troops < FREE_LAND_COST + density) {
@@ -1090,6 +1145,7 @@ function boatLands(boat) {
     defender.pop = Math.max(0, defender.pop - density);
   }
   setOwner(tile, nation.id);
+  if (defender) damageCaptured(tile, nation, defender);
   if (defender && defender.tiles === 0) eliminate(defender, nation);
   addTroops(nation, holder, boat.mass, boat.troops - FREE_LAND_COST - density, boat.aimX, boat.aimY);
   if (nation.isPlayer) toast("Your boat landed! Click nearby land to send more troops.");
@@ -1117,7 +1173,7 @@ const allianceEnds = new Map();   // pair of allies -> game time their alliance 
 function formAlliance(a, b) {
   a.allies.add(b.id);
   b.allies.add(a.id);
-  allianceEnds.set(pairKey(a.id, b.id), gameTime + ALLIANCE_SECONDS);
+  allianceEnds.set(pairKey(a.id, b.id), gameTime + peaceLeft() + ALLIANCE_SECONDS);   // peace time doesn't count
 }
 
 const allianceLeft = (a, b) => (allianceEnds.get(pairKey(a, b)) ?? 0) - gameTime;
@@ -1246,6 +1302,7 @@ function giveToAlly(id, what) {
 /* An ally attacks your chosen target by land if it can, or by boat if it can't. */
 function jointAttack(ally, targetId) {
   const target = nations[targetId];
+  if (atPeace()) return toast(`It's peace time for another ${formatClock(peaceLeft())}.`);
   if (areAllies(ally.id, targetId)) return toast(`${ally.name} won't attack its own ally.`);
   const contact = [...borders[ally.id]].find(key => key >> 8 === targetId);
   const troops = ally.pop * JOINT_ATTACK_SHARE;
@@ -1484,7 +1541,7 @@ function hunt(u) {
 }
 
 function subWillAttack(u, id) {
-  return id !== u.owner && id !== FREE && nations[id].alive && !areAllies(u.owner, id);
+  return id !== u.owner && id !== FREE && nations[id].alive && !areAllies(u.owner, id) && !atPeace();
 }
 
 function shipTile(ship) {
@@ -1496,17 +1553,18 @@ function captureShip(u, ship) {
   const from = shipTile(ship);
   const nearest = myPorts.sort((a, b) => tileDistance(a.tile, from) - tileDistance(b.tile, from))[0];
   const path = nearest ? findWaterPath(from, nearest.tile) : null;
+  const victim = nations[owner[ship.port.tile]];
+  if (victim && victim.id !== u.owner) declareWar(nations[u.owner], victim.id);   // stealing a ship is an act of war
   if (!path) {                       // no port to take it to: sink it for what it's worth
     ships = ships.filter(other => other !== ship);
     return;
   }
-  const victim = nations[owner[ship.port.tile]];
   ship.thief = u.owner;
   ship.path = path;
   ship.pos = 0;
   ship.dir = 1;
-  if (nations[u.owner].isPlayer) toast(`Your submarine captured a ${victim.name} trade ship!`);
-  else if (victim.isPlayer) toast(`${nations[u.owner].name}'s submarine captured one of your trade ships!`);
+  if (nations[u.owner].isPlayer) toast(`Your submarine captured a ${victim.name} trade ship! You're now at war with them.`);
+  else if (victim.isPlayer) toast(`${nations[u.owner].name}'s submarine captured one of your trade ships! You're now at war.`);
 }
 
 function moveSubs() {
@@ -1590,6 +1648,7 @@ const fortSlow = b => Math.min(.9, FORT_BASE_SLOW + (b.level - 1) * .03);
 /* Why this silo can't fire this weapon right now, or null if it can. */
 function missileProblem(nation, silo, kind) {
   const spec = MISSILES[kind];
+  if (atPeace()) return `Peace time: ${formatClock(peaceLeft())} left`;
   if (!isBuilt(silo)) return "Silo still being built";
   if (silo.level < spec.level) return `Needs silo level ${spec.level}`;
   if (silo.reload > 0) return `Reloading ${Math.ceil(silo.reload)}s`;
@@ -1610,8 +1669,21 @@ function launchMissile(nation, silo, kind, target) {
     kind, shooter: nation.id, fromX: silo.tile % W, fromY: silo.tile / W | 0, target,
     travelled: 0, total: tileDistance(silo.tile, target),
   });
-  if (holder !== FREE && nations[holder].isPlayer) toast(`${nation.name} launched a ${spec.name} at you!`);
+  if (holder !== FREE && nations[holder].isPlayer) {
+    const hit = buildings.find(b => b.tile === target);
+    const aim = hit ? `your ${buildingInfo(hit).name}` : `your land`;
+    toast(`${spec.name} incoming from ${nation.name}, fired from the ${compass(silo.tile)} of the map at ${aim} in the ${compass(target)}. Click to see.`,
+      silo.tile);
+  }
   return true;
+}
+
+/* Roughly where on the map a tile is, in words: "north-west", "centre"... */
+function compass(tile) {
+  const x = tile % W / W, y = (tile / W | 0) / H;
+  const ns = y < .34 ? "north" : y > .66 ? "south" : "";
+  const ew = x < .34 ? "west" : x > .66 ? "east" : "";
+  return ns && ew ? `${ns}-${ew}` : ns || ew || "centre";
 }
 
 function missilePoint(m, extra = 0) {
@@ -1902,7 +1974,7 @@ function botThink(bot) {
   const touching = [...borders[bot.id]].map(key => ({ target: key >> 8, mass: key & 255 }));
   const free = touching.filter(t => t.target === FREE);
   bot.landLeft = free.length > 0;
-  const rivals = touching.filter(t => t.target !== FREE && canPickOn(bot, t.target));
+  const rivals = atPeace() ? [] : touching.filter(t => t.target !== FREE && canPickOn(bot, t.target));
 
   let order = null;
   // Only one war wave at a time, then a rest, so a huge army comes in waves you can answer.
@@ -2087,6 +2159,7 @@ function botUpgrade(bot, b) {
   const cost = upgradePrice(b, bot);
   if (bot.swizz < cost) return false;
   bot.swizz -= cost;
+  b.spent += cost;
   upgradeBuilding(b);
   tallyBuildings();
   return true;
@@ -2135,8 +2208,10 @@ function botBuild(bot) {
       if (botUpgrade(bot, existing[0])) return true;
       continue;                                      // nowhere to build it: try the next wish
     }
-    bot.swizz -= priceOf(type, bot);
+    const price = priceOf(type, bot);
+    bot.swizz -= price;
     const b = addBuilding(tile, type);
+    b.spent = price;
     if (type === "mine") b.uranium = clearDeposit(tile);
     tallyBuildings();
     refreshStops();
@@ -2186,6 +2261,7 @@ function addBuilding(tile, type) {
     buildLeft: BUILD_SECONDS[type] || 0,             // seconds until construction is done
     buildTotal: BUILD_SECONDS[type] || 0,
     upgrading: false,                                // building its next level (still works meanwhile)
+    spent: 0,                                        // swizz paid for it so far: deleting it refunds DELETE_REFUND of this
   };
   buildings.push(building);
   return building;
@@ -2195,8 +2271,9 @@ function mineIncome(b) {
   const basic = Math.min(b.level, MINE_CHOICE_LEVEL) * MINE_INCOME;
   const past = Math.max(0, b.level - MINE_CHOICE_LEVEL);
   if (b.branch !== "lab") return basic + past * DEEP_MINE_INCOME;
-  const labPast = b.trader ? b.trader - MINE_CHOICE_LEVEL : past;   // b.trader = the level it switched at
-  return basic + labPast * LAB_INCOME + (b.trader ? b.level - b.trader : 0) * TRADER_INCOME;
+  if (!b.trader) return basic + past * LAB_INCOME;
+  const switchedAt = Math.max(b.trader, MINE_CHOICE_LEVEL);   // b.trader = the level it switched at
+  return basic + Math.min(past, switchedAt - MINE_CHOICE_LEVEL) * LAB_INCOME + Math.max(0, b.level - switchedAt) * TRADER_INCOME;
 }
 
 const canBecomeTrader = b => b.type === "mine" && b.branch === "lab" && !b.trader && b.level >= TRADER_LEVEL;
@@ -2305,6 +2382,7 @@ function placeBuilding(tile, type) {
   if (player.swizz < cost) return toast(`You need ${formatNumber(cost)} swizz for that.`);
   player.swizz -= cost;
   const building = addBuilding(tile, type);
+  building.spent = cost;
   if (type === "mine") building.uranium = clearDeposit(tile);
   tallyBuildings();
   refreshStops();
@@ -2376,6 +2454,7 @@ function upgradeSelected() {
   const cost = upgradePrice(selected);
   if (player.swizz < cost) return toast(`You need ${formatNumber(cost)} swizz for that.`);
   player.swizz -= cost;
+  selected.spent += cost;
   upgradeBuilding(selected);
   tallyBuildings();
   updateHud();
@@ -2389,12 +2468,36 @@ function convertToRocket(station) {
   refreshStops();
 }
 
+/* Taking down one of your own buildings gives back part of what you paid for it.
+   A launch site can't be taken down while its rocket is counting down. */
+const DELETE_REFUND = 0.5;
+const deleteProblem = b => launches.some(l => l.site === b) ? "Can't delete during a rocket countdown" : null;
+
+function deleteBuilding(b) {
+  if (deleteProblem(b) || owner[b.tile] !== player.id) return;
+  const refund = Math.floor(b.spent * DELETE_REFUND);
+  const name = buildingInfo(b).name;
+  removeBuilding(b, player.id, true);
+  player.swizz += refund;
+  tallyBuildings();
+  toast(`You took down your ${name} and got ${formatNumber(refund)} swizz back.`);
+  updateHud();
+}
+
+function askToDelete(b) {
+  const refund = Math.floor(b.spent * DELETE_REFUND);
+  const busy = isBusy(b) ? " It's still being built, so you only get back half of what's been paid so far." : "";
+  askToConfirm(`Delete this ${buildingInfo(b).name}?`,
+    `You'll get back ${formatNumber(refund)} swizz, half of the ${formatNumber(b.spent)} spent on it.${busy} This can't be undone.`,
+    `Delete for ${formatNumber(refund)}`, () => deleteBuilding(b));
+}
+
 /* Knocks a building off the map, with anything that depended on it. */
-function removeBuilding(b, holder = owner[b.tile]) {
+function removeBuilding(b, holder = owner[b.tile], demolished = false) {
   const index = buildings.indexOf(b);
   if (index < 0) return;             // already gone
   buildings.splice(index, 1);
-  if (b.type === "city" && isBuilt(b) && holder !== FREE) {   // the people living there die with it
+  if (b.type === "city" && isBuilt(b) && holder !== FREE && !demolished) {   // the people living there die with it
     const n = nations[holder];
     const killed = Math.min(n.pop, cityMaxPop(b) * CITY_DESTROYED_KILL);
     n.pop -= killed;
@@ -2582,15 +2685,27 @@ function fillMines() {
 }
 
 /* ============================== GAME LOOP ============================== */
-let phase = "choosing";   // "choosing" -> "playing" -> "over"
+let phase = "lobby";   // "choosing" -> "playing" -> "over"
 let tickCount = 0;
 let lastTickAt = 0;       // lets trains glide smoothly between ticks
+
+let warBegun = false;
+function announceWar() {
+  warBegun = true;
+  const banner = document.getElementById("banner");
+  banner.textContent = "War begins!";
+  banner.classList.add("war");
+  banner.style.display = "block";
+  setTimeout(() => { banner.style.display = "none"; banner.classList.remove("war"); }, 4000);
+  toast("The peace is over. Nations can attack each other now!");
+}
 
 function tick() {
   if (phase !== "playing" || isFrozen()) return;
   gameTime += DT;
 
   tallyBuildings();
+  if (gameMode.peace && !warBegun && !atPeace()) announceWar();
   if (tickCount++ % TICKS_PER_SECOND === 0) {
     refreshStops();
     expireAlliances();
@@ -2858,16 +2973,35 @@ for (const [key, level] of Object.entries(DIFFICULTIES)) {
   choice.addEventListener("click", () => {
     difficulty = level;
     remember("swizzDifficulty", key);   // remembered for next game
-    for (const other of document.querySelectorAll(".levelChoice")) other.classList.toggle("picked", other === choice);
+    for (const other of document.querySelectorAll("#levels .levelChoice")) other.classList.toggle("picked", other === choice);
+    document.getElementById("levelAbout").textContent = level.about;
   });
   document.getElementById("levels").append(choice);
 }
+document.getElementById("levelAbout").textContent = difficulty.about;
+
+for (const [key, mode] of Object.entries(GAME_MODES)) {
+  const choice = element("button", "levelChoice" + (mode === gameMode ? " picked" : ""));
+  choice.textContent = mode.name;
+  choice.addEventListener("click", () => {
+    gameMode = mode;
+    remember("swizzMode", key);
+    for (const other of document.querySelectorAll("#modes .levelChoice")) other.classList.toggle("picked", other === choice);
+    document.getElementById("modeAbout").textContent = mode.about;
+  });
+  document.getElementById("modes").append(choice);
+}
+document.getElementById("modeAbout").textContent = gameMode.about;
+
+document.getElementById("startGame").addEventListener("click", () => {
+  document.getElementById("lobby").classList.remove("show");
+  document.getElementById("banner").style.display = "block";
+  phase = "choosing";
+});
 
 function chooseStart(tile) {
   if (tile < 0 || isWater(tile)) return toast("You can't start in the ocean. Pick a spot on land.");
   player = createNation("Your Nation", playerColor, "★", true);
-  document.getElementById("colorPicker").style.display = "none";
-  document.getElementById("difficultyPicker").style.display = "none";
   claimStartingLand(player, tile);
   phase = "playing";
   placeBots(tile);
@@ -2877,7 +3011,6 @@ function chooseStart(tile) {
   toast("Rival nations have landed. Glowing deposits are now revealed.");
   document.getElementById("banner").style.display = "none";
   document.getElementById("leftDock").style.display = "flex";
-  document.getElementById("radar").style.display = "block";
   document.getElementById("clockBar").style.display = "flex";
   toast("Click land to send troops. Right-click your land to build, or a nation to ally or attack.");
   updateNationUi();
@@ -2899,6 +3032,7 @@ function orderAttack(tile) {
     return;
   }
 
+  if (target !== FREE && atPeace()) return toast(`It's peace time: no attacking other nations for another ${formatClock(peaceLeft())}.`);
   if (target !== FREE && !betrayalConfirmed(target, () => orderAttack(tile))) return;
 
   const name = target === FREE ? "that land" : nations[target].name;
@@ -2969,7 +3103,7 @@ function updateHud() {
   hud.growth.classList.toggle("down", g < 0);
   hud.popFill.style.width = Math.min(100, player.pop / player.maxPop * 100) + "%";
   hud.attackTroops.textContent = formatNumber(player.pop * pct / 100) + " troops";
-  document.getElementById("clock").textContent = formatClock(gameTime);
+  document.getElementById("clock").textContent = atPeace() ? `Peace ${formatClock(peaceLeft())}` : formatClock(gameTime);
   hud.miniSwizz.textContent = `Swizz ${formatNumber(player.swizz)}`;
   hud.miniPop.textContent = `Pop ${formatNumber(player.pop)} / ${formatNumber(player.maxPop)}`;
   hud.miniAttack.textContent = `Attack ${pct}%`;
@@ -3149,7 +3283,10 @@ function updateBuildUi() {
     buildUi.button.textContent = `Upgrade for ${formatNumber(cost)} (${Math.round(upgradeSeconds(selected))}s)`;
     buildUi.button.disabled = player.swizz < cost;
   }
-  setActions(buildUi.actions, !isUnit ? buildingActions(selected) : selected.guard < 0 ? [] : [{
+  const doomed = selected, stopped = !isUnit && deleteProblem(selected);
+  const remove = { label: stopped || `Delete (get ${formatNumber(Math.floor(selected.spent * DELETE_REFUND))} back)`,
+    danger: true, disabled: !!stopped, run: () => askToDelete(doomed) };
+  setActions(buildUi.actions, !isUnit ? [...buildingActions(selected), remove] : selected.guard < 0 ? [] : [{
     label: "Explore the whole map", run: () => { selected.guard = -1; selected.path = null; selected.huntTimer = 0; },
   }]);
 }
@@ -3255,7 +3392,8 @@ function fillWheel() {
         else requestAlliance(id);
         closeWheel();
       });
-    addWheelItem([60, 0], "big attack", "", () => ({ name: "Attack", cost: "Attack", detail: "troops or missiles" }), () => {
+    addWheelItem([60, 0], "big attack", "", () => ({ name: "Attack", cost: "Attack", detail: "troops or missiles",
+      problem: atPeace() ? `Peace time: ${formatClock(peaceLeft())} left` : null }), () => {
       const openAttacks = () => { if (wheel) { wheel.stage = "attack"; fillWheel(); } };
       if (betrayalConfirmed(id, openAttacks)) openAttacks();
     });
@@ -3322,7 +3460,7 @@ const raceBox = document.getElementById("raceBody");
 const nationListBox = document.getElementById("nationRows");
 
 /* Minimize tabs on the left-hand panels. */
-for (const button of document.querySelectorAll("#race .fold, #nationList .fold, #radar .fold")) {
+for (const button of document.querySelectorAll("#nationList .fold")) {
   button.addEventListener("click", () => {
     const folded = button.closest(".panel").classList.toggle("folded");
     button.textContent = folded ? "+" : "−";
@@ -3487,10 +3625,12 @@ const FEED_MAX = 5;
 const FEED_SECONDS = 5;
 const feedBox = document.getElementById("feed");
 
-function toast(message) {
+/* A note in the feed. Give it a tile and clicking the note jumps the map there. */
+function toast(message, tile) {
   const last = feedBox.lastElementChild;
   if (last && last.textContent === message && !last.classList.contains("gone")) return;   // no repeats
-  const line = element("div", "note", message);
+  const line = element("div", "note" + (tile >= 0 ? " jump" : ""), message);
+  if (tile >= 0) line.addEventListener("click", () => lookAt(tile));
   feedBox.append(line);
   while (feedBox.children.length > FEED_MAX) feedBox.firstElementChild.remove();
   setTimeout(() => line.classList.add("gone"), FEED_SECONDS * 1000);
@@ -3537,7 +3677,7 @@ function drawTile(i) {
     g = OCEAN_SHALLOW[1] + (OCEAN_DEEP[1] - OCEAN_SHALLOW[1]) * t + shade * 6;
     b = OCEAN_SHALLOW[2] + (OCEAN_DEEP[2] - OCEAN_SHALLOW[2]) * t + shade * 8;
   } else {
-    const hidden = phase === "choosing";   // mines stay a secret until you've picked your spot
+    const hidden = !player;   // mines stay a secret until you've picked your spot
     const ground = hidden ? LAND_COLOR.map(c => c + shade * 6)
       : deposit[i] === URANIUM ? [90 + shade * 40, 226 + shade * 29, 70 + shade * 50]   // green uranium
       : deposit[i] ? [226 + shade * 29, 196 + shade * 40, 60 + shade * 70]             // glowing swizz deposit
@@ -4280,88 +4420,13 @@ function drawRadiation(now) {
   }
 }
 
-/* ------------------------------ Radar ------------------------------
-   A small copy of the map, bottom left, that only marks what's coming at you:
-   troops by land and sea, and missiles. Click it to jump there. */
-const radarCanvas = document.getElementById("radarMap");
-const radar = radarCanvas.getContext("2d");
-const radarTitle = document.getElementById("radarTitle");
-const RADAR_SCALE = radarCanvas.width / W;
-
-function radarDot(x, y, size, color) {
-  radar.fillStyle = color;
-  radar.fillRect(Math.round(x * RADAR_SCALE - size / 2), Math.round(y * RADAR_SCALE - size / 2), size, size);
-}
-
-function radarLine(ax, ay, bx, by, color, dotted) {
-  const steps = Math.ceil(Math.hypot(bx - ax, by - ay) * RADAR_SCALE);
-  radar.fillStyle = color;
-  for (let k = 0; k <= steps; k++) {
-    if (dotted && k % 3 === 2) continue;
-    const t = steps ? k / steps : 0;
-    radar.fillRect(Math.round((ax + (bx - ax) * t) * RADAR_SCALE), Math.round((ay + (by - ay) * t) * RADAR_SCALE), 1, 1);
-  }
-}
-
-function drawRadar(now) {
-  if (!player) return;
-  radar.imageSmoothingEnabled = false;
-  radar.drawImage(mapCanvas, 0, 0, radarCanvas.width, radarCanvas.height);
-  radar.fillStyle = "rgba(10, 6, 24, .5)";          // dimmed, so the warnings stand out
-  radar.fillRect(0, 0, radarCanvas.width, radarCanvas.height);
-  const blink = Math.floor(now / 250) % 2 === 0;
-  let threats = 0;
-
-  for (const a of attacks) {                        // troops marching in over land
-    if (a.target !== player.id || a.labelTile < 0) continue;
-    threats++;
-    const x = a.labelTile % W, y = a.labelTile / W | 0;
-    if (blink) radarDot(x, y, 6, "#ff3b3b");
-    radarDot(x, y, 3, nations[a.attacker].color);
-  }
-  for (const boat of boats) {                       // troop ships, with a line to where they'll land
-    if (boat.target !== player.id) continue;
-    threats++;
-    const here = boatPoint(boat, now), landing = boat.path[boat.path.length - 1];
-    radarLine(here.x, here.y, landing % W, landing / W | 0, "#ff6b6b", true);
-    if (blink) radarDot(landing % W, landing / W | 0, 4, "#ff3b3b");
-    radarDot(here.x, here.y, 3, nations[boat.attacker].color);
-  }
-  for (const m of missiles) {                       // missiles, with a line to their target
-    if (owner[m.target] !== player.id) continue;
-    threats++;
-    const here = missilePoint(m), tx = m.target % W, ty = m.target / W | 0;
-    radarLine(here.x, here.y, tx, ty, "#ffd166", true);
-    if (blink) {
-      radarDot(tx - 2, ty - 2, 2, "#ff3b3b"); radarDot(tx + 2, ty - 2, 2, "#ff3b3b");
-      radarDot(tx - 2, ty + 2, 2, "#ff3b3b"); radarDot(tx + 2, ty + 2, 2, "#ff3b3b");
-    }
-    radarDot(here.x, here.y, 3, m.kind === "missile" ? "#ffffff" : m.kind === "nuke" ? "#9dff6a" : "#ff5dd1");
-  }
-
-  // The part of the map you're looking at
-  const left = Math.max(0, -viewX / viewScale), top = Math.max(0, -viewY / viewScale);
-  const right = Math.min(W, (canvas.width - viewX) / viewScale), bottom = Math.min(H, (canvas.height - viewY) / viewScale);
-  if (right - left < W - 1 || bottom - top < H - 1) {
-    radar.strokeStyle = "rgba(255, 255, 255, .7)";
-    radar.lineWidth = 1;
-    radar.strokeRect(Math.round(left * RADAR_SCALE) + .5, Math.round(top * RADAR_SCALE) + .5,
-      Math.round((right - left) * RADAR_SCALE) - 1, Math.round((bottom - top) * RADAR_SCALE) - 1);
-  }
-
-  const title = threats ? `Radar: ${threats} incoming!` : "Radar: all clear";
-  if (radarTitle.textContent !== title) radarTitle.textContent = title;
-  radarTitle.classList.toggle("danger", threats > 0);
-}
-
-radarCanvas.addEventListener("click", event => {
-  const box = radarCanvas.getBoundingClientRect();
-  const x = (event.clientX - box.left) / box.width * W, y = (event.clientY - box.top) / box.height * H;
-  if (viewScale === fitScale) viewScale = Math.min(MAX_ZOOM * devicePixelRatio, fitScale * 3);   // zoom in to see it
-  viewX = canvas.width / 2 - x * viewScale;
-  viewY = canvas.height / 2 - y * viewScale;
+/* Centre the map on a tile, zooming in if you're looking at the whole planet. */
+function lookAt(tile) {
+  if (viewScale === fitScale) viewScale = Math.min(MAX_ZOOM * devicePixelRatio, fitScale * 3);
+  viewX = canvas.width / 2 - (tile % W + .5) * viewScale;
+  viewY = canvas.height / 2 - ((tile / W | 0) + .5) * viewScale;
   clampView();
-});
+}
 
 function drawArtLayer(now) {
   art.clearRect(0, 0, artCanvas.width, artCanvas.height);
@@ -4488,7 +4553,6 @@ function render() {
   }
   drawFloatingTexts(now);
   if (finale) drawFinale(now);
-  drawRadar(now);
 
   requestAnimationFrame(render);
 }
