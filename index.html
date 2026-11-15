@@ -498,7 +498,10 @@ const DIFFICULTIES = {
   hard:   { name: "Hard",   think: 0.6,  aggression: 1,   rest: 0.8, bravery: 1.1,  fire: 1.3, waveCap: 3,   defends: true,  plan: "smart" },
 };
 const SMART_KEEP = 0.45;        // smart bots keep their people near this share of max, where growth is fastest
-let difficulty = DIFFICULTIES[localStorage.getItem("swizzDifficulty")] || DIFFICULTIES.medium;
+// Some places (like shared links) block saved settings, so remembering is a bonus, never required.
+const remembered = key => { try { return localStorage.getItem(key); } catch { return null; } };
+const remember = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+let difficulty = DIFFICULTIES[remembered("swizzDifficulty")] || DIFFICULTIES.medium;
 const START_RADIUS = 5;       // size in tiles of a nation's starting land
 const TICKS_PER_SECOND = 10;
 const DT = 1 / TICKS_PER_SECOND;
@@ -2854,7 +2857,7 @@ for (const [key, level] of Object.entries(DIFFICULTIES)) {
   choice.textContent = level.name;
   choice.addEventListener("click", () => {
     difficulty = level;
-    localStorage.setItem("swizzDifficulty", key);   // remembered for next game
+    remember("swizzDifficulty", key);   // remembered for next game
     for (const other of document.querySelectorAll(".levelChoice")) other.classList.toggle("picked", other === choice);
   });
   document.getElementById("levels").append(choice);
