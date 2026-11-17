@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swizz Conquest</title>
+<meta name="description" content="A pixel-art conquest game. Grow your nation, build mines and cities, and win by conquering the planet, digging to the core or launching a rocket.">
+<!-- What shows when the link is shared (iMessage, Discord and so on). The picture is made by tools/make_preview.py -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Swizz Conquest">
+<meta property="og:description" content="A pixel-art conquest game. Grow your nation, build mines and cities, and win by conquering the planet, digging to the core or launching a rocket.">
+<meta property="og:url" content="https://wolfie123212.github.io/swizz-conquest/">
+<meta property="og:image" content="https://wolfie123212.github.io/swizz-conquest/preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <style>
   /* The pixel font is built by tools/make_pixel_font.py. It's crisp at sizes
      that are multiples of 4px on a Retina screen, so only use 8, 12, 16, 24 or 32. */
@@ -19,6 +29,14 @@
 
   /* The lobby: colour, difficulty and game mode before the game starts */
   #lobby { z-index: 4; }
+  #help { z-index: 6; }
+  #helpBox { max-width: 600px; max-height: 86vh; overflow-y: auto; text-align: left; }
+  #helpBox h1 { text-align: center; color: #ffd166; }
+  #helpBox h2 { margin: 14px 0 6px; font-size: 16px; font-weight: normal; color: #3ee6c1; }
+  #helpBox ul { margin: 0; padding-left: 18px; color: #d8cfee; line-height: 1.5; }
+  #helpBox li { margin-bottom: 4px; }
+  #helpBox b { color: #ffd166; font-weight: normal; }
+  #helpBox .menuButtons { margin-top: 16px; }
   #lobbyBox { min-width: 420px; max-width: 520px; }
   #lobbyBox h1 { font-size: 32px; margin-bottom: 18px; color: #ffd166; }
   .lobbyRow { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; text-align: left; }
@@ -219,7 +237,7 @@
     <div class="lobbyAbout" id="levelAbout"></div>
     <div class="lobbyRow"><span class="lobbyLabel">Game mode</span><div id="modes"></div></div>
     <div class="lobbyAbout" id="modeAbout"></div>
-    <div class="menuButtons"><button id="startGame" class="menuButton">Start</button></div>
+    <div class="menuButtons"><button class="menuButton quiet helpButton">How to play</button><button id="startGame" class="menuButton">Start</button></div>
   </div>
 </div>
 <div id="clockBar" class="panel"><span id="clock">0:00</span><button id="pauseButton" aria-label="Pause">II</button></div>
@@ -277,12 +295,42 @@
   <div id="feed"></div>
 </div>
 
+<div id="help" class="overlay">
+  <div id="helpBox" class="panel menuBox">
+    <h1>How to play</h1>
+    <h2>Win one of three ways</h2>
+    <ul>
+      <li><b>Conquest:</b> own <span id="helpLand"></span> of the land, or be the last nation standing.</li>
+      <li><b>Core:</b> keep a mine digging past level <span class="helpChoice"></span> until it reaches level <span id="helpCore"></span>.</li>
+      <li><b>Space:</b> turn a level <span id="helpStation"></span> train station into a launch site, get <span id="helpLabs"></span> labs (a mine at level <span class="helpChoice"></span> can become a lab) to level <span id="helpLabLevel"></span>, then launch a rocket. Everyone sees the countdown and will try to stop you.</li>
+    </ul>
+    <h2>Controls</h2>
+    <ul>
+      <li><b>Click</b> the map to pick where you start.</li>
+      <li><b>Left-click</b> empty land or another nation to send troops there. The <b>Attack force</b> slider (bottom) sets how many of your people go.</li>
+      <li><b>Right-click</b> your own land to build. Right-click another nation to make an alliance or attack.</li>
+      <li><b>Click</b> one of your buildings to upgrade or delete it. Click a submarine, then the water, to move it.</li>
+      <li><b>Drag</b> to move around, <b>scroll</b> to zoom, <b>Esc</b> to pause.</li>
+    </ul>
+    <h2>Tips</h2>
+    <ul>
+      <li>Your people grow fastest when your population bar is about half full. Sending everyone to fight leaves your land empty and slow to grow.</li>
+      <li>Taking a nation's land costs more the more crowded it is, so thinly spread nations are easier to beat.</li>
+      <li>Mines only go on swizz deposits. Cities raise how many people you can have.</li>
+      <li>When someone attacks you, a warning shows at the top right. Press <b>Counter</b> to fight back.</li>
+      <li>Allies trade with you and can send help, but attacking an ally makes you a traitor.</li>
+    </ul>
+    <div class="menuButtons"><button id="helpClose" class="menuButton">Got it</button></div>
+  </div>
+</div>
+
 <div id="pauseMenu" class="overlay">
   <div class="panel menuBox">
     <h1>Paused</h1>
     <div class="menuButtons">
       <button id="resume" class="menuButton">Resume</button>
       <button id="newGame" class="menuButton quiet">New game</button>
+      <button class="menuButton quiet helpButton">How to play</button>
     </div>
     <div class="menuHint">Esc to resume</div>
   </div>
@@ -2884,6 +2932,7 @@ canvas.addEventListener("contextmenu", event => {
 /* Esc closes whatever's open; with nothing open it pauses the game. */
 addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
+  if (helpBox.classList.contains("show")) return helpBox.classList.remove("show");
   if (confirmYes) return closeConfirm(false);
   if (paused) return setPaused(false);
   if (wheel || aiming || selected) {
@@ -3008,6 +3057,18 @@ for (const [key, mode] of Object.entries(GAME_MODES)) {
   document.getElementById("modes").append(choice);
 }
 document.getElementById("modeAbout").textContent = gameMode.about;
+
+/* How to play: the numbers come from the game's own settings so they stay right. */
+document.getElementById("helpLand").textContent = Math.round(WIN_LAND_SHARE * 100) + "%";
+document.querySelectorAll(".helpChoice").forEach(el => el.textContent = MINE_CHOICE_LEVEL);
+document.getElementById("helpCore").textContent = CORE_LEVEL;
+document.getElementById("helpStation").textContent = ROCKET_STATION_LEVEL;
+document.getElementById("helpLabs").textContent = ROCKET_LABS;
+document.getElementById("helpLabLevel").textContent = ROCKET_LAB_LEVEL;
+const helpBox = document.getElementById("help");
+document.querySelectorAll(".helpButton").forEach(b => b.addEventListener("click", () => helpBox.classList.add("show")));
+document.getElementById("helpClose").addEventListener("click", () => helpBox.classList.remove("show"));
+helpBox.addEventListener("click", event => { if (event.target === helpBox) helpBox.classList.remove("show"); });
 
 document.getElementById("startGame").addEventListener("click", () => {
   document.getElementById("lobby").classList.remove("show");
