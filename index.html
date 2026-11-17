@@ -37,6 +37,11 @@
   #helpBox li { margin-bottom: 4px; }
   #helpBox b { color: #ffd166; font-weight: normal; }
   #helpBox .menuButtons { margin-top: 16px; }
+  #helpPictures { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+  .helpPicture { display: flex; gap: 10px; align-items: center; }
+  .helpPicture canvas { position: static; display: block; cursor: default; flex: none; width: 72px; height: 72px; image-rendering: pixelated; border: 2px solid #3a2c57; }
+  .helpPicture b { display: block; }
+  .helpPicture span { color: #b3a4d6; line-height: 1.4; }
   #lobbyBox { min-width: 420px; max-width: 520px; }
   #lobbyBox h1 { font-size: 32px; margin-bottom: 18px; color: #ffd166; }
   .lobbyRow { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; text-align: left; }
@@ -312,6 +317,8 @@
       <li><b>Click</b> one of your buildings to upgrade or delete it. Click a submarine, then the water, to move it.</li>
       <li><b>Drag</b> to move around, <b>scroll</b> to zoom, <b>Esc</b> to pause.</li>
     </ul>
+    <h2>What you'll see on the map</h2>
+    <div id="helpPictures"></div>
     <h2>Tips</h2>
     <ul>
       <li>Your people grow fastest when your population bar is about half full. Sending everyone to fight leaves your land empty and slow to grow.</li>
@@ -541,6 +548,7 @@ const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a mi
    think: how long they take to react (x their normal thinking time)
    aggression: how often they pick fights   rest: how long they wait between waves
    bravery: how big a nation they dare attack   fire: how often they shoot missiles
+   guard: keep this share of the strongest neighbour's people at home, never spending below it
    waveCap: the most troops in one wave, as a share of the defender's population
    captureDamage: share of levels a building loses when it's captured in battle (rounded down, never below 1)
    defends: meets big invasions at the border with its own army (see botDefend)
@@ -550,7 +558,7 @@ const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a mi
 const DIFFICULTIES = {
   easy:   { name: "Easy",   think: 1.4,  aggression: 0.6, rest: 1.5, bravery: 0.8,  fire: 0.6, waveCap: 1.0, defends: false, captureDamage: 0,    plan: "simple" },
   medium: { name: "Medium", think: 0.85, aggression: 1.2, rest: 0.9, bravery: 1.05, fire: 1.1, waveCap: 2,   defends: true,  captureDamage: 0,    plan: "normal" },
-  hard:   { name: "Hard",   think: 0.6,  aggression: 1,   rest: 0.8, bravery: 1.1,  fire: 1.3, waveCap: 3,   defends: true,  captureDamage: 0.25, plan: "smart" },
+  hard:   { name: "Hard",   think: 0.6,  aggression: 1,   rest: 0.8, bravery: 1.1,  fire: 1.3, waveCap: 3,   defends: true,  captureDamage: 0.25, plan: "smart", guard: 0.7 },
 };
 DIFFICULTIES.easy.about = "Rivals are slow, muddled and rarely start wars.";
 DIFFICULTIES.medium.about = "Rivals build sensibly, pick fights and defend their borders.";
@@ -861,7 +869,9 @@ function damageCaptured(tile, taker, loser) {
   b.level = Math.max(1, Math.floor(before * (1 - share)));
   if (b.level === before) return;
   b.spent = Math.round(b.spent * b.level / before);   // it's worth less now
-  if (b.trader && b.trader > b.level) b.trader = b.level;
+  // Damaged below the level where it changed form, it goes back to what it was before.
+  if (b.trader && b.level < TRADER_LEVEL) b.trader = 0;                  // Day Trader -> Chemical Lab
+  if (b.type === "mine" && b.branch && b.level < MINE_CHOICE_LEVEL) b.branch = null;   // lab or deep mine -> plain mine
   if (b.type === "sam") b.charges = Math.min(b.charges, samMaxCharges(b));
   if (b.type === "station") {                        // one train per level
     let extra = trains.filter(t => t.station === b).length - b.level;
@@ -2054,11 +2064,11 @@ function botThink(bot) {
   const aim = order.target === FREE ? bot : nations[order.target];
   let troops;
   if (order.target === FREE) {
-    troops = smart ? bot.pop * (.25 + Math.random() * .1)   // land is cheap and pays forever: grab it fast
+    troops = smart ? Math.min(bot.pop * (.25 + Math.random() * .1), spareTroops(bot))   // land is cheap and pays forever: grab it fast
       : bot.pop * (bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1);
   } else {
     // Smart bots spend only what's above the fast-growth point, so their nation keeps growing at full speed.
-    const share = smart ? Math.max(0, bot.pop - bot.maxPop * SMART_KEEP) : bot.pop * (BOT_WAR_SHARE + Math.random() * .08);
+    const share = smart ? spareTroops(bot, bot.maxPop * SMART_KEEP) : bot.pop * (BOT_WAR_SHARE + Math.random() * .08);
     troops = Math.min(share, aim.pop * skill.waveCap);
     // Too few to take more than a handful of tiles: not worth starting a war over.
     if (troops < BOT_MIN_WAVE_TILES * (FREE_LAND_COST + aim.pop / Math.max(1, aim.tiles))) {
@@ -2071,12 +2081,26 @@ function botThink(bot) {
   startAttack(bot, order.target, order.mass, troops, aim.sumX / aim.tiles, aim.sumY / aim.tiles);
 }
 
+/* Troops a bot can send without leaving itself open: it keeps enough people home
+   to answer its strongest neighbour, plus anything already on its way to it. */
+function guardSize(bot) {
+  if (!bot.skill.guard) return 0;
+  let threat = 0, incoming = 0;
+  for (const key of borders[bot.id]) {
+    const id = key >> 8;
+    if (id !== FREE && id !== bot.id && !areAllies(bot.id, id)) threat = Math.max(threat, nations[id].pop);
+  }
+  for (const a of [...attacks, ...boats]) if (a.target === bot.id) incoming += a.troops;
+  return threat * bot.skill.guard + incoming;
+}
+const spareTroops = (bot, keep = 0) => Math.max(0, bot.pop - Math.max(keep, guardSize(bot)));
+
 /* How a smart bot picks a war. Taking a tile costs the people defending it, so
    thinly spread nations (few people per tile, often because they're busy fighting
    someone else) are the cheapest to take. Anyone close to winning gets attacked
    first, whatever the cost. It only fights with troops it can spare. */
 function smartWarTarget(bot, touching, rivals, landLeft) {
-  const spare = bot.pop - bot.maxPop * SMART_KEEP;
+  const spare = spareTroops(bot, bot.maxPop * SMART_KEEP);
   if (spare <= 0) return null;
   const density = t => nations[t.target].pop / Math.max(1, nations[t.target].tiles);
   const affordable = t => spare > 20 * (FREE_LAND_COST + density(t));   // enough to take at least ~20 tiles
@@ -2115,6 +2139,8 @@ function botSendBoat(bot) {
     if (holder === bot.id || borders[bot.id].has(borderKey(holder, landmass[tile]))) continue;
     if (holder !== FREE && (!canPickOn(bot, holder) || gameTime < (bot.warRestUntil || 0))) continue;
     let troops = bot.pop * (.1 + Math.random() * .15);
+    if (bot.skill.guard) troops = Math.min(troops, spareTroops(bot));
+    if (troops < FREE_LAND_COST * 10) return;
     if (holder !== FREE) {
       troops = Math.min(troops, nations[holder].pop * bot.skill.waveCap);
       bot.warRestUntil = gameTime + BOT_WAR_REST * bot.skill.rest;
@@ -3107,6 +3133,80 @@ document.querySelectorAll(".helpButton").forEach(b => b.addEventListener("click"
 document.getElementById("helpClose").addEventListener("click", () => helpBox.classList.remove("show"));
 helpBox.addEventListener("click", event => { if (event.target === helpBox) helpBox.classList.remove("show"); });
 
+/* Pictures of what's on the map, drawn live with the game's own pixel art. */
+const HELP_PICTURES = [
+  { name: "Swizz deposit", ground: "swizz", about: "Glowing gold ground. Build a mine on it to dig swizz." },
+  { name: "Uranium deposit", ground: "uranium", about: `Green ground. A mine here digs uranium from level ${URANIUM_MINE_LEVEL}, for nukes.` },
+  { name: "City", b: { type: "city", level: 1 }, about: "Raises how many people you can have, and how fast they grow." },
+  { name: "Swizz Mine", ground: "swizz", b: { type: "mine", level: 3 }, about: "Digs swizz. Trains collect the half that waits at the mine." },
+  { name: "Chemical Lab", ground: "swizz", b: { type: "mine", level: 12, branch: "lab" }, about: `A mine at level ${MINE_CHOICE_LEVEL} can become one. Needed for the rocket.` },
+  { name: "Day Trader", ground: "swizz", b: { type: "mine", level: 22, branch: "lab", trader: TRADER_LEVEL }, about: `A lab at level ${TRADER_LEVEL} can switch. Earns far more, but not for the rocket.` },
+  { name: "Train Station", b: { type: "station", level: 1 }, about: "Its trains run to your mines and cities for money. One train per level." },
+  { name: "Port", ground: "coast", b: { type: "port", level: 1 }, about: "Goes on the coast. Sends trade ships and builds submarines." },
+  { name: "Submarine", ground: "sea", sub: true, about: "Hunts enemy trade ships and subs. Repairs at any of your ports." },
+  { name: "SAM Site", b: { type: "sam", level: 1, charges: 1 }, about: "Shoots down missiles aimed near it." },
+  { name: "Fort", b: { type: "fort", level: 1 }, about: "Slows down troops invading the land around it." },
+  { name: "Missile Silo", b: { type: "silo", level: 1, reload: 0 }, about: "Fires missiles, nukes and hydrogen bombs." },
+  { name: "Launch Site", b: { type: "rocket", level: 1 }, about: `A level ${ROCKET_STATION_LEVEL} station can become one. Your rocket launches here.` },
+];
+const HELP_ART = 24;   // each picture is 24x24 art pixels (6x6 map tiles)
+const helpCanvases = HELP_PICTURES.map((pic, k) => {
+  const card = element("div", "helpPicture");
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = HELP_ART;
+  const text = element("div");
+  text.append(element("b", "", pic.name), element("span", "", pic.about));
+  card.append(canvas, text);
+  document.getElementById("helpPictures").append(card);
+  pic.b && Object.assign(pic.b, { tile: 1000 + k * 37, hurtUntil: -1, stock: 0, upgrading: false });
+  return canvas;
+});
+
+function drawHelpPictures() {
+  const time = performance.now() / 1000;
+  const color = playerColor, rgb = hexToRgb(color);
+  const saved = [pen, plotX, plotY];
+  HELP_PICTURES.forEach((pic, k) => {
+    pen = helpCanvases[k].getContext("2d");
+    pen.clearRect(0, 0, HELP_ART, HELP_ART);
+    plotX = plotY = 0;
+    for (let ty = 0; ty < 6; ty++) {
+      for (let tx = 0; tx < 6; tx++) {                     // the ground, one map tile (4 art pixels) at a time
+        const shade = seeded(k * 50 + ty * 6 + tx, 1) * .5 - .25;
+        const sea = pic.ground === "sea" || (pic.ground === "coast" && tx >= 4);
+        const round = Math.hypot(tx - 2.5, ty - 2.5) < 2.6;
+        let c = sea ? OCEAN_SHALLOW.map((v, i) => v + (OCEAN_DEEP[i] - v) * .6 + shade * [4, 6, 8][i])   // a bit out from shore
+          : pic.ground === "swizz" && round ? [226 + shade * 29, 196 + shade * 40, 60 + shade * 70]
+          : pic.ground === "uranium" && round ? [90 + shade * 40, 226 + shade * 29, 70 + shade * 50]
+          : LAND_COLOR.map(v => v + shade * 6);
+        if (pic.b && !sea) {                                // your land, tinted in your colour
+          const tint = pic.ground === "swizz" && round ? .35 : .72;
+          c = c.map((v, i) => rgb[i] * tint + v * (1 - tint));
+        }
+        px(`rgb(${c.map(Math.round).join(",")})`, tx * ART_RES, ty * ART_RES, ART_RES, ART_RES);
+      }
+    }
+    if (pic.sub) drawSubHull(12, 13, color);
+    if (pic.b) {
+      plotX = plotY = (HELP_ART - PLOT) / 2;
+      const b = pic.b;
+      if (b.type === "city") drawCityArt(b, time);
+      else if (b.type === "station") drawStationArt(b, time);
+      else if (b.type === "port") drawPortArt(b, time, color);
+      else if (b.type === "sam") drawSamArt(b, time, color);
+      else if (b.type === "fort") drawFortArt(b, time, color);
+      else if (b.type === "silo") drawSiloArt(b, time, color);
+      else if (b.type === "rocket") drawRocketArt(b, time);
+      else if (b.branch !== "lab") drawMineArt(b, time, color);
+      else if (!b.trader) drawLabArt(b, time, color);
+      else drawTraderArt(b, time, color);
+    }
+  });
+  [pen, plotX, plotY] = saved;
+}
+// While How to play is open, keep the pictures moving like they do on the map.
+setInterval(() => { if (helpBox.classList.contains("show")) drawHelpPictures(); }, 100);
+
 document.getElementById("startGame").addEventListener("click", () => {
   document.getElementById("lobby").classList.remove("show");
   document.getElementById("banner").style.display = "block";
@@ -3868,10 +3968,11 @@ artCanvas.width = W * ART_RES;
 artCanvas.height = H * ART_RES;
 const art = artCanvas.getContext("2d");
 let plotX = 0, plotY = 0;
+let pen = art;          // what px draws on: the map's art layer, or a How to play picture
 
 function px(color, x, y, w = 1, h = 1) {
-  art.fillStyle = color;
-  art.fillRect(plotX + Math.round(x), plotY + Math.round(y), w, h);
+  pen.fillStyle = color;
+  pen.fillRect(plotX + Math.round(x), plotY + Math.round(y), w, h);
 }
 
 /* A colour part way between two hex colours (0 = the first, 1 = the second). */
@@ -3925,9 +4026,9 @@ function drawMineArt(b, time, shirt) {
   pixelDisc("#2c2115", 7, 8, 2.5);
   if (b.branch !== "lab" && b.level > MINE_CHOICE_LEVEL) {   // the shaft to the core glows hotter, then golden
     const near = Math.min(1, (b.level - MINE_CHOICE_LEVEL) / (CORE_LEVEL - MINE_CHOICE_LEVEL));
-    art.globalAlpha = .2 + .25 * near * (.5 + .5 * Math.sin(time * 3));
+    pen.globalAlpha = .2 + .25 * near * (.5 + .5 * Math.sin(time * 3));
     pixelDisc(mixColor("#ff6a1a", "#ffe066", near), 7, 8, 5 + near * 7);
-    art.globalAlpha = 1;
+    pen.globalAlpha = 1;
     pixelDisc(mixColor("#7a2a10", "#c99a2e", near), 7, 8, 2.5 + near * 2);
     pixelDisc(mixColor("#ff6a1a", "#fff3b0", near), 7, 8, 1.5 + near * 2);
   }
@@ -4241,6 +4342,12 @@ function drawShips(now) {
   }
 }
 
+function drawSubHull(x, y, color) {
+  px("#20262f", x - 4, y, 9, 2);                   // long dark hull
+  px("#3a4552", x - 3, y - 1, 7, 1);
+  px(color, x - 1, y - 3, 2, 2);                   // conning tower in the owner's colour
+}
+
 function drawSubs(now) {
   plotX = plotY = 0;
   for (const u of subs) {
@@ -4254,9 +4361,7 @@ function drawSubs(now) {
         if (k % 3 === shift) px("#ffd166", x + (tx - x) * k / steps, y + (ty - y) * k / steps);
       }
     }
-    px("#20262f", x - 4, y, 9, 2);                   // long dark hull
-    px("#3a4552", x - 3, y - 1, 7, 1);
-    px(nations[u.owner].color, x - 1, y - 3, 2, 2);  // conning tower in the owner's colour
+    drawSubHull(x, y, nations[u.owner].color);
     if (u.health < SUB_HEALTH) {                     // health bar once it's been hit
       const share = u.health / SUB_HEALTH;
       px("#160e26", x - 5, y - 7, 11, 3);
@@ -4283,7 +4388,7 @@ function drawSinkings(now) {
   for (const k of sinkings) {
     const t = (now - k.born) / SINK_MS;
     const x = Math.round(tileToArt(k.x)), y = Math.round(tileToArt(k.y) + t * 6);
-    art.globalAlpha = 1 - t;
+    pen.globalAlpha = 1 - t;
     const tilt = Math.min(4, Math.floor(t * 8));     // the stern rises as the bow goes under
     for (let d = -4; d <= 4; d++) {
       const dy = Math.round(-d * tilt / 4);
@@ -4291,7 +4396,7 @@ function drawSinkings(now) {
       if (Math.abs(d) < 4) px("#3a4552", x + d, y + dy - 1);
     }
     if (t < .5) px(k.color, x - 1, y - 3, 2, 2);
-    art.globalAlpha = 1;
+    pen.globalAlpha = 1;
     for (let b = 0; b < 5; b++) {                    // bubbles rising and popping
       const rise = ((now / 12 + b * 37) % 40) / 40;
       if (rise > .9) continue;
@@ -4465,11 +4570,11 @@ function drawTrains(now) {
     const glide = phase === "playing" ? Math.min(.1, (now - lastTickAt) / 1000) * (train.speed || TRAIN_SPEED) : 0;
     const head = Math.min(train.dist, Math.max(0, train.pos + train.dir * glide));
     if (train.station.level >= STATION_RADIO_LEVEL) {             // a flickering see-through shadow train
-      art.globalAlpha = .35 + .15 * Math.sin(now / 140 + train.nextStop);
+      pen.globalAlpha = .35 + .15 * Math.sin(now / 140 + train.nextStop);
       trainBlock("#1a1030", train, head, 0, 15, 1.5);
       trainBlock("#6aff8a", train, head, 0, 0, .5);
       trainBlock(train.cargo > 0 ? "#ffd166" : "#3a2c57", train, head, 4, 13, .5);
-      art.globalAlpha = 1;
+      pen.globalAlpha = 1;
       continue;
     }
     trainBlock("#20202a", train, head, 0, 5, 1.5);                 // engine
