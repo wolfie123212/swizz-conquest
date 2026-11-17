@@ -74,6 +74,12 @@
   .menuButton:hover { outline: 3px solid #ffd166; }
   .menuHint { margin-top: 12px; color: #8b7fa6; }
 
+  /* The last 5 seconds of Build Phase peace: a huge see-through number in the middle of the screen */
+  #warCountdown { position: fixed; inset: 0; display: none; place-items: center; pointer-events: none; z-index: 4;
+    font-size: 40vmin; color: rgba(255, 240, 240, .5); text-shadow: 1.2vmin 1.2vmin 0 rgba(22, 14, 38, .35); }
+  #warCountdown.show { display: grid; }
+  #warCountdown span { animation: countPop 1s steps(6) both; }
+  @keyframes countPop { from { transform: scale(1.5); opacity: 0; } 25% { transform: scale(1); opacity: 1; } to { opacity: .75; } }
   #banner.war { font-size: 32px; color: #ff6b6b; border-color: #ff6b6b; }
   #banner { position: fixed; top: 58px; left: 50%; transform: translateX(-50%);
     padding: 10px 18px; font-size: 16px; white-space: nowrap; pointer-events: none; }
@@ -239,6 +245,7 @@
 <canvas id="view"></canvas>
 
 <div id="banner" class="panel" style="display:none">Choose a starting location</div>
+<div id="warCountdown"></div>
 <div id="lobby" class="overlay show">
   <div id="lobbyBox" class="panel menuBox">
     <h1>Swizz Conquest</h1>
@@ -2881,8 +2888,22 @@ let tickCount = 0;
 let lastTickAt = 0;       // lets trains glide smoothly between ticks
 
 let warBegun = false;
+/* The last few seconds of peace count down in the middle of the screen. */
+const WAR_COUNTDOWN = 5;
+const warCountdown = document.getElementById("warCountdown");
+function showWarCountdown() {
+  const left = Math.ceil(peaceLeft());
+  const showing = gameMode.peace && !warBegun && left > 0 && left <= WAR_COUNTDOWN;
+  warCountdown.classList.toggle("show", showing);
+  if (showing && warCountdown.textContent !== String(left)) {
+    warCountdown.innerHTML = "";
+    warCountdown.append(element("span", "", String(left)));   // a fresh element restarts the pop
+  }
+}
+
 function announceWar() {
   warBegun = true;
+  warCountdown.classList.remove("show");
   const banner = document.getElementById("banner");
   banner.textContent = "War begins!";
   banner.classList.add("war");
@@ -2897,6 +2918,7 @@ function tick() {
 
   tallyBuildings();
   if (gameMode.peace && !warBegun && !atPeace()) announceWar();
+  showWarCountdown();
   if (tickCount++ % TICKS_PER_SECOND === 0) {
     refreshStops();
     expireAlliances();
