@@ -557,18 +557,21 @@ const BOT_FIRE_CHANCE = 0.15;   // chance per think that a bot at war fires a mi
    guard: keep this share of the strongest neighbour's people at home, never spending below it
    waveCap: the most troops in one wave, as a share of the defender's population
    captureDamage: share of levels a building loses when it's captured in battle (rounded down, never below 1)
+   economy: how big an economy they aim for (x the normal number of mine, city, station and port levels)
+   leaderAt: anyone this far along a way to win (0 to 1) gets attacked by every neighbour, whatever the odds
+   teamUp: they ally with each other against whoever is winning, never with the leader
    defends: meets big invasions at the border with its own army (see botDefend)
    plan: "simple"  - buys in a muddled order, picks random targets, never worries about defence
          "normal"  - a sensible shopping list, random weaker targets
          "smart"   - plays the real strategy: see botThink, smartWarTarget, botDefend and botFire */
 const DIFFICULTIES = {
   easy:   { name: "Easy",   think: 1.4,  aggression: 0.6, rest: 1.5, bravery: 0.8,  fire: 0.6, waveCap: 1.0, defends: false, captureDamage: 0,    plan: "simple" },
-  medium: { name: "Medium", think: 0.85, aggression: 1.2, rest: 0.9, bravery: 1.05, fire: 1.1, waveCap: 2,   defends: true,  captureDamage: 0,    plan: "normal" },
-  hard:   { name: "Hard",   think: 0.6,  aggression: 1,   rest: 0.8, bravery: 1.1,  fire: 1.3, waveCap: 3,   defends: true,  captureDamage: 0.25, plan: "smart", guard: 0.7 },
+  medium: { name: "Medium", think: 0.75, aggression: 1.2, rest: 0.85, bravery: 1.05, fire: 1.2, waveCap: 2,  defends: true,  captureDamage: 0,    plan: "smart", guard: 0.5, economy: 1.25, leaderAt: 0.45 },
+  hard:   { name: "Hard",   think: 0.45, aggression: 1,   rest: 0.65, bravery: 1.15, fire: 1.5, waveCap: 3,  defends: true,  captureDamage: 0.25, plan: "smart", guard: 0.7, economy: 1.6, leaderAt: 0.3, teamUp: true },
 };
 DIFFICULTIES.easy.about = "Rivals are slow, muddled and rarely start wars.";
-DIFFICULTIES.medium.about = "Rivals build sensibly, pick fights and defend their borders.";
-DIFFICULTIES.hard.about = "Rivals play the real strategy. Captured buildings lose a quarter of their levels.";
+DIFFICULTIES.medium.about = "Rivals play the real strategy: they pick smart fights, defend their borders and go after whoever is winning.";
+DIFFICULTIES.hard.about = "Rivals think fast, build big economies and team up on whoever is winning. Captured buildings lose a quarter of their levels.";
 
 /* Game modes, picked in the lobby. */
 const PEACE_SECONDS = 300;      // Build Phase: nobody can attack another nation for this long
@@ -2112,7 +2115,7 @@ function botThink(bot) {
       : bot.pop * (bot.style === "expander" ? .2 + Math.random() * .15 : .1 + Math.random() * .1);
   } else {
     // Smart bots spend only what's above the fast-growth point, so their nation keeps growing at full speed.
-    const share = smart ? spareTroops(bot, bot.maxPop * SMART_KEEP) : bot.pop * (BOT_WAR_SHARE + Math.random() * .08);
+    const share = order.troops ?? (smart ? spareTroops(bot, bot.maxPop * SMART_KEEP) : bot.pop * (BOT_WAR_SHARE + Math.random() * .08));
     troops = Math.min(share, aim.pop * skill.waveCap);
     // Too few to take more than a handful of tiles: not worth starting a war over.
     if (troops < BOT_MIN_WAVE_TILES * (FREE_LAND_COST + aim.pop / Math.max(1, aim.tiles))) {
@@ -2127,33 +2130,38 @@ function botThink(bot) {
 
 /* Troops a bot can send without leaving itself open: it keeps enough people home
    to answer its strongest neighbour, plus anything already on its way to it. */
-function guardSize(bot) {
+function guardSize(bot, fighting = -1) {
   if (!bot.skill.guard) return 0;
   let threat = 0, incoming = 0;
   for (const key of borders[bot.id]) {
     const id = key >> 8;
+    if (id === fighting) continue;      // the army sent at them guards that border itself
     if (id !== FREE && id !== bot.id && !areAllies(bot.id, id)) threat = Math.max(threat, nations[id].pop);
   }
   for (const a of [...attacks, ...boats]) if (a.target === bot.id) incoming += a.troops;
   return threat * bot.skill.guard + incoming;
 }
-const spareTroops = (bot, keep = 0) => Math.max(0, bot.pop - Math.max(keep, guardSize(bot)));
+const spareTroops = (bot, keep = 0, fighting = -1) => Math.max(0, bot.pop - Math.max(keep, guardSize(bot, fighting)));
 
 /* How a smart bot picks a war. Taking a tile costs the people defending it, so
    thinly spread nations (few people per tile, often because they're busy fighting
    someone else) are the cheapest to take. Anyone close to winning gets attacked
    first, whatever the cost. It only fights with troops it can spare. */
 function smartWarTarget(bot, touching, rivals, landLeft) {
-  const spare = spareTroops(bot, bot.maxPop * SMART_KEEP);
-  if (spare <= 0) return null;
   const density = t => nations[t.target].pop / Math.max(1, nations[t.target].tiles);
   const affordable = t => spare > 20 * (FREE_LAND_COST + density(t));   // enough to take at least ~20 tiles
 
+  const spare = spareTroops(bot, bot.maxPop * SMART_KEEP);
   const standings = raceStandings();
-  const leaders = new Set(["land", "core", "space"].flatMap(k => standings[k].filter(s => s.value > .5).map(s => s.n.id)));
-  const leader = touching.find(t => t.target !== FREE && leaders.has(t.target) && !areAllies(bot.id, t.target) && affordable(t));
-  if (leader) return leader;
+  const leaders = new Set(["land", "core", "space"].flatMap(k => standings[k].filter(s => s.value > (bot.skill.leaderAt ?? .5)).map(s => s.n.id)));
+  // Against someone pulling ahead, the army sent at them also guards that border, so more can go.
+  for (const t of touching) {
+    if (t.target === FREE || t.target === bot.id || !leaders.has(t.target) || areAllies(bot.id, t.target)) continue;
+    const troops = spareTroops(bot, bot.maxPop * SMART_KEEP, t.target);
+    if (troops > 20 * (FREE_LAND_COST + density(t))) return { ...t, troops };
+  }
 
+  if (spare <= 0) return null;
   const cheapest = rivals.filter(affordable).sort((a, b) => density(a) - density(b))[0];
   if (!cheapest) return null;
   // While there's still empty land, only fight when it's nearly as cheap as settling.
@@ -2195,10 +2203,21 @@ function botSendBoat(bot) {
 }
 
 function botDiplomacy(bot) {
-  if (bot.allies.size >= MAX_ALLIES || Math.random() > BOT_ALLIANCE_CHANCE) return;
-  const partner = randomFrom(nations.filter(n => n && n.alive && !n.isPlayer && n !== bot
+  // Bots that team up look for partners far more often while someone is pulling ahead, and never pick the leader.
+  const leader = bot.skill.teamUp ? raceLeader(bot.skill.leaderAt) : null;
+  const chance = BOT_ALLIANCE_CHANCE * (leader ? 4 : 1);
+  if (bot.allies.size >= MAX_ALLIES || Math.random() > chance || bot === leader) return;
+  const partner = randomFrom(nations.filter(n => n && n.alive && !n.isPlayer && n !== bot && n !== leader
     && n.allies.size < MAX_ALLIES && !areAllies(bot.id, n.id) && canTrade(bot.id, n.id)));
   if (partner) formAlliance(bot, partner);
+}
+
+/* The nation furthest along any way to win, if it's past this point (0 to 1). */
+function raceLeader(past) {
+  const standings = raceStandings();
+  let best = null, bestValue = past;
+  for (const k of ["land", "core", "space"]) for (const s of standings[k]) if (s.value > bestValue) { best = s.n; bestValue = s.value; }
+  return best;
 }
 
 /* Bots at war sometimes fire at the enemy's buildings, and always at a rocket site. */
@@ -2323,10 +2342,11 @@ function botBuild(bot) {
     if (bot.samLevels < 2 + minutes / 4) wishes.push("sam");
     if (bot.fortLevels < 2 + minutes / 4) wishes.push("fort");
   }
-  if (bot.cityLevels < BOT_MAX_CITY_LEVELS + gameTime / BOT_CITY_LEVEL_SECONDS) wishes.push("city");
-  if (bot.portLevels < BOT_PORT_LEVELS + gameTime / BOT_PORT_LEVEL_SECONDS && ownsCoast(bot)) wishes.push("port");
-  if (bot.cityLevels >= 2 && bot.stationLevels < Math.min(BOT_MAX_STATION_LEVELS, 1 + minutes / 3)) wishes.push("station");
-  if (bot.mineLevels < BOT_MAX_MINE_LEVELS + minutes) wishes.push("mine");
+  const big = bot.skill.economy || 1;              // harder bots aim for a bigger economy
+  if (bot.cityLevels < (BOT_MAX_CITY_LEVELS + gameTime / BOT_CITY_LEVEL_SECONDS) * big) wishes.push("city");
+  if (bot.portLevels < (BOT_PORT_LEVELS + gameTime / BOT_PORT_LEVEL_SECONDS) * big && ownsCoast(bot)) wishes.push("port");
+  if (bot.cityLevels >= 2 && bot.stationLevels < Math.min(BOT_MAX_STATION_LEVELS * big, (1 + minutes / 3) * big)) wishes.push("station");
+  if (bot.mineLevels < (BOT_MAX_MINE_LEVELS + minutes) * big) wishes.push("mine");
   if (gameTime > 120 && bot.fortLevels < 2) wishes.push("fort");
   if (gameTime > 180 && bot.samLevels < 1 + minutes / 6) wishes.push("sam");
   if (gameTime > 240 && bot.siloLevels < 1) wishes.push("silo");

@@ -17,6 +17,7 @@ import html
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 import webbrowser
 
@@ -34,8 +35,21 @@ def fetch(config):
         f"{config['host'].rstrip('/')}/api/projects/{config['project_id']}/query/",
         data=json.dumps({"query": {"kind": "HogQLQuery", "query": query}}).encode(),
         headers={"Authorization": f"Bearer {config['personal_key']}", "Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        rows = json.load(response)["results"]
+    for attempt in range(3):          # the connection sometimes times out; just try again
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                rows = json.load(response)["results"]
+            break
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                sys.exit("PostHog didn't accept the personal key. Check the key in private/stats_config.json "
+                         "and that it has the Query: Read permission.")
+            if attempt == 2:
+                sys.exit(f"PostHog had a problem ({error.code}). Try again in a minute.")
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt == 2:
+                sys.exit("Couldn't reach PostHog: check the internet connection, then try again in a minute.")
+        print("Connection was slow, trying again...")
     events = []
     for event, who, when, props in rows:
         props = json.loads(props) if isinstance(props, str) else (props or {})
