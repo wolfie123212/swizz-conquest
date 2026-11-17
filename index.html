@@ -436,7 +436,7 @@ const SUB_HUNT_RANGE = 80;      // exploring subs spot trade ships up to this fa
 const SUB_GUARD_RADIUS = 25;    // a sub you've sent somewhere only hunts within this many tiles of that spot
 const BOT_SUB_START = 150;      // computer nations with a port start buying subs after this many seconds...
 const BOT_SUB_SECONDS = 150;    // ...and want one more every this many seconds, up to SUB_MAX
-const SUB_RETREAT_SHARE = 0.35; // below this share of health a sub stops hunting and heads to its own port...
+const SUB_RETREAT_SHARE = 0.35; // below this share of health a sub stops hunting and heads to its nearest own port...
 const SUB_HEAL_RATE = 8;        // ...where it repairs this much health per second, then goes back out
 const SUB_DOCK_RANGE = 2;       // how close to the port it must be to repair, in tiles
 const SUB_RETHINK_SECONDS = 1;  // how often a hunting sub picks its prey and re-plots its course
@@ -467,6 +467,7 @@ const BOT_BRAVERY = 0.6;        // bots only attack nations smaller than this sh
 const BOT_LATE_BRAVERY = 1.1;   // ...or this share once there's no free land left to take...
 const BOT_FULL_BRAVERY = 1.25;  // ...or this share when their population is nearly at its max
 const BOT_WAR_REST = 30;        // after attacking a nation, a bot waits this many seconds before attacking any nation again
+const BOT_MIN_WAVE_TILES = 10;   // bots don't start a war wave that can't take at least this many tiles
 const BOT_WAR_SHARE = 0.12;     // bots send 12-20% of their people at a nation (land grabs use more), capped by difficulty.waveCap
 const BOT_MAX_PILE_ON = 2;      // bots leave a nation alone once this many are already attacking it
 const BOT_BOAT_CHANCE = 0.3;    // chance a bot with nothing to do on land sends a boat instead
@@ -1458,6 +1459,7 @@ function buySub(nation, port) {
 function sendSub(u, tile) {
   const path = findWaterPath(u.tile, tile);
   if (!path) return false;
+  if (path.length > 1 && !isWater(path[path.length - 1])) path.pop();   // sent to a port: stop on the water beside it
   u.path = path;
   u.pos = 0;
   u.manual = true;     // follow orders first, then guard that spot (or go home, if still badly hurt)
@@ -1504,7 +1506,8 @@ function patrol(u) {
   }
 }
 
-/* A badly hurt sub sails to its nearest own port to repair. With no port it keeps fighting. */
+/* A badly hurt sub sails to its nearest own port to repair. With no port it keeps fighting.
+   Any sub near any of its own ports repairs there too, so you can also send one to a port yourself. */
 function headHome(u) {
   const ports = buildings.filter(b => b.type === "port" && isBuilt(b) && owner[b.tile] === u.owner)
     .sort((a, b) => tileDistance(a.tile, u.tile) - tileDistance(b.tile, u.tile));
@@ -1567,6 +1570,12 @@ function captureShip(u, ship) {
   else if (victim.isPlayer) toast(`${nations[u.owner].name}'s submarine captured one of your trade ships! You're now at war.`);
 }
 
+/* The sub's own built port it's close enough to repair at, if any. */
+function portNear(u) {
+  return buildings.find(b => b.type === "port" && isBuilt(b) && owner[b.tile] === u.owner
+    && tileDistance(b.tile, u.tile) <= SUB_DOCK_RANGE) || null;
+}
+
 function moveSubs() {
   for (const u of [...subs]) {
     if (!subs.includes(u)) continue;   // sunk earlier this same moment
@@ -1575,10 +1584,11 @@ function moveSubs() {
       if (!u.dock && u.health < SUB_HEALTH * SUB_RETREAT_SHARE) headHome(u);
       if (!u.dock) hunt(u);
     }
-    if (u.dock && !u.manual && tileDistance(u.tile, u.dock.tile) <= SUB_DOCK_RANGE) {   // repairing at port
-      u.path = null;
+    const homePort = u.health < SUB_HEALTH ? portNear(u) : null;   // any of its own ports will do
+    if (homePort) {                                                 // repairing at port
+      if (u.dock && !u.manual) u.path = null;                   // a sub that came home to repair waits there
       u.health = Math.min(SUB_HEALTH, u.health + SUB_HEAL_RATE * DT);
-      if (u.health >= SUB_HEALTH) {
+      if (u.health >= SUB_HEALTH && u.dock) {
         u.dock = null;
         if (nations[u.owner].isPlayer) toast("Your submarine is repaired and back out hunting.");
       }
@@ -2000,6 +2010,12 @@ function botThink(bot) {
     // Smart bots spend only what's above the fast-growth point, so their nation keeps growing at full speed.
     const share = smart ? Math.max(0, bot.pop - bot.maxPop * SMART_KEEP) : bot.pop * (BOT_WAR_SHARE + Math.random() * .08);
     troops = Math.min(share, aim.pop * skill.waveCap);
+    // Too few to take more than a handful of tiles: not worth starting a war over.
+    if (troops < BOT_MIN_WAVE_TILES * (FREE_LAND_COST + aim.pop / Math.max(1, aim.tiles))) {
+      if (free.length) order = randomFrom(free); else return;
+      troops = bot.pop * (.1 + Math.random() * .1);
+      return startAttack(bot, order.target, order.mass, troops, bot.sumX / bot.tiles, bot.sumY / bot.tiles);
+    }
     bot.warRestUntil = gameTime + BOT_WAR_REST * skill.rest * (.7 + Math.random() * .6);
   }
   startAttack(bot, order.target, order.mass, troops, aim.sumX / aim.tiles, aim.sumY / aim.tiles);
@@ -3180,7 +3196,8 @@ function buildingActions(b) {
 /* What a submarine is up to, for its panel. */
 function subHint(u) {
   if (u.manual) return "Following your orders, then it goes back to hunting";
-  if (u.dock) return tileDistance(u.tile, u.dock.tile) <= SUB_DOCK_RANGE ? "Repairing at port" : "Badly damaged: heading home to repair";
+  if (u.health < SUB_HEALTH && portNear(u)) return "Repairing at port";
+  if (u.dock) return "Badly damaged: heading home to repair";
   const where = u.guard >= 0 ? "Guarding this area" : "Exploring the map";
   if (u.prey) return `${where}: chasing a ${nations[owner[u.prey.port.tile]].name} trade ship`;
   if (u.guard >= 0) return `${where}: hunts trade ships within ${SUB_GUARD_RADIUS} tiles of it. Click water to move it`;
@@ -3570,7 +3587,8 @@ const alertElements = new Map();
 
 function updateAlerts() {
   if (!player) return;
-  const incoming = [...attacks, ...boats].filter(a => a.target === player.id);
+  // Only attacks really reaching your land: boats on the way, or troops at your border.
+  const incoming = [...attacks, ...boats].filter(a => a.target === player.id && (a.path || a.frontier.length > 0));
 
   for (const [id, parts] of alertElements) {
     if (!incoming.some(a => a.id === id)) {
@@ -4146,7 +4164,7 @@ function drawSubs(now) {
       px("#160e26", x - 5, y - 7, 11, 3);
       px(share > .6 ? "#54f28d" : share > SUB_RETREAT_SHARE ? "#ffd166" : "#ff5d5d", x - 4, y - 6, Math.max(1, Math.round(9 * share)), 1);
     }
-    if (u.dock && tileDistance(u.tile, u.dock.tile) <= SUB_DOCK_RANGE && Math.floor(now / 300) % 2) {
+    if (u.health < SUB_HEALTH && portNear(u) && Math.floor(now / 300) % 2) {
       px("#54f28d", x + 6, y - 6, 3, 1);             // blinking + while repairing
       px("#54f28d", x + 7, y - 7, 1, 3);
     }
