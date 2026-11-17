@@ -206,6 +206,10 @@
   .alertTroops { color: #ff9b9b; }
   .counter { flex: none; border: 0; padding: 8px; background: #ff6b6b; color: #160e26; cursor: pointer; }
   .counter:hover { background: #ff8a8a; }
+  .alert.own { border-color: #3ee6c1; order: 1; }   /* your own attacks sit below incoming ones */
+  .alert.own .alertTroops { color: #9ff3df; }
+  .alert.own .counter { background: #3ee6c1; }
+  .alert.own .counter:hover { background: #7ff0d6; }
   .counter:disabled { background: #5c5266; color: #a59bb0; cursor: not-allowed; }
 
   /* Defeat screen */
@@ -490,7 +494,7 @@ const SUB_COST = 40000;
 const SUB_MAX = 5;              // most a nation can have
 const SUB_SPEED = 4.5;          // tiles per second, still faster than trade ships
 const SUB_RANGE = 10;           // how close it must get to fight subs, troop ships and ports, in tiles
-const SUB_TOUCH = 1.5;          // a trade ship this close (touching) is captured
+const SUB_TOUCH = 2;            // a trade ship this close (touching) is captured
 const SUB_HUNT_RANGE = 80;      // exploring subs spot trade ships up to this far away
 const SUB_GUARD_RADIUS = 25;    // a sub you've sent somewhere only hunts within this many tiles of that spot
 const BOT_SUB_START = 150;      // computer nations with a port start buying subs after this many seconds...
@@ -1217,8 +1221,35 @@ function boatLands(boat) {
 function moveBoats() {
   for (const boat of [...boats]) {
     boat.pos += BOAT_SPEED * DT;
-    if (boat.pos >= boat.path.length - 1 && boats.includes(boat)) boatLands(boat);
+    if (boat.pos < boat.path.length - 1 || !boats.includes(boat)) continue;
+    if (boat.retreating) troopsHome(boat, "Your boat made it home.");
+    else boatLands(boat);
   }
+}
+
+/* Troops that are called back rejoin their nation's people. */
+function troopsHome(attack, message) {
+  removeAttack(attack);
+  const nation = nations[attack.attacker];
+  if (!nation.alive) return;
+  nation.pop = Math.min(Math.max(nation.pop, nation.maxPop), nation.pop + attack.troops);
+  if (nation.isPlayer && message) toast(message);
+}
+
+/* Calls an attack off: troops fighting on land come straight home, and a boat
+   turns round and sails back the way it came. */
+function retreat(attackId) {
+  const attack = attacks.find(a => a.id === attackId);
+  if (attack) return troopsHome(attack, `${formatNumber(attack.troops)} troops pulled back home.`);
+  const boat = boats.find(b => b.id === attackId && !b.retreating);
+  if (!boat) return;
+  const at = Math.floor(boat.pos);
+  if (at < 1) return troopsHome(boat, "Your boat turned back at the shore.");
+  boat.path = boat.path.slice(0, at + 1).reverse();
+  boat.pos = 0;
+  boat.target = -1;              // no longer attacking anyone
+  boat.retreating = true;
+  toast("Your boat is turning back.");
 }
 
 /* ============================== DIPLOMACY ==============================
@@ -1531,8 +1562,15 @@ function sendSub(u, tile) {
   return true;
 }
 
-const canHunt = (u, ship) => ships.includes(ship) && ship.path && ship.thief === null
-  && subWillAttack(u, owner[ship.port.tile]);
+/* Who a trade ship belongs to right now: whoever stole it last, or its port's owner. */
+const shipHolder = ship => ship.thief !== null ? ship.thief : owner[ship.port.tile];
+/* A sub takes any ship that isn't its own nation's or an ally's (peace time aside). */
+function canHunt(u, ship) {
+  if (!ships.includes(ship) || !ship.path || atPeace()) return false;
+  const holder = shipHolder(ship);
+  if (holder === u.owner) return false;
+  return holder === FREE || !nations[holder].alive || !areAllies(u.owner, holder);
+}
 
 /* The nearest trade ship worth chasing, leaving ones a teammate is already after. */
 function findPrey(u) {
@@ -1618,9 +1656,17 @@ function captureShip(u, ship) {
   const from = shipTile(ship);
   const nearest = myPorts.sort((a, b) => tileDistance(a.tile, from) - tileDistance(b.tile, from))[0];
   const path = nearest ? findWaterPath(from, nearest.tile) : null;
-  const victim = nations[owner[ship.port.tile]];
-  if (victim && victim.id !== u.owner) declareWar(nations[u.owner], victim.id);   // stealing a ship is an act of war
-  if (!path) {                       // no port to take it to: sink it for what it's worth
+  const holder = shipHolder(ship);
+  const victim = holder !== FREE && nations[holder].alive ? nations[holder] : null;
+  const takingBack = owner[ship.port.tile] === u.owner;      // one of your own ships that had been stolen
+  const taker = nations[u.owner];
+  if (victim) declareWar(taker, victim.id);                  // stealing a ship is an act of war
+  if (taker.isPlayer) {
+    toast(takingBack ? "Your submarine took back your stolen trade ship!"
+      : `Your submarine captured a ${victim ? victim.name : "drifting"} trade ship!${victim ? " You're now at war with them." : ""}`, from);
+  } else if (victim && victim.isPlayer) toast(`${taker.name}'s submarine captured one of your trade ships! You're now at war.`, from);
+  if (!path) {                       // no port of yours to sail it to: its cargo is yours on the spot
+    taker.swizz += voyageFare(ship.path);
     ships = ships.filter(other => other !== ship);
     return;
   }
@@ -1628,8 +1674,6 @@ function captureShip(u, ship) {
   ship.path = path;
   ship.pos = 0;
   ship.dir = 1;
-  if (nations[u.owner].isPlayer) toast(`Your submarine captured a ${victim.name} trade ship! You're now at war with them.`);
-  else if (victim.isPlayer) toast(`${nations[u.owner].name}'s submarine captured one of your trade ships! You're now at war.`);
 }
 
 /* The sub's own built port it's close enough to repair at, if any. */
@@ -1663,6 +1707,14 @@ function moveSubs() {
     u.firingAt = -1;
     const inRange = tile => tileDistance(tile, u.tile) <= SUB_RANGE;
 
+    // Touching a trade ship takes it over, even in the middle of a fight
+    const ship = ships.find(c => canHunt(u, c) && tileDistance(shipTile(c), u.tile) <= SUB_TOUCH);
+    if (ship) {
+      captureShip(u, ship);
+      if (u.prey === ship) u.prey = null;
+      u.huntTimer = 0;
+    }
+
     const foe = subs.find(other => other !== u && subWillAttack(u, other.owner) && inRange(other.tile));
     if (foe) {
       declareWar(nations[u.owner], foe.owner);
@@ -1684,16 +1736,6 @@ function moveSubs() {
       boat.troops *= 1 - SUB_BOAT_DAMAGE * DT;
       u.firingAt = boat.path[Math.floor(boat.pos)];
       if (boat.troops < 1000) removeAttack(boat);
-      continue;
-    }
-
-    // Touching a trade ship takes it over
-    const ship = ships.find(c => canHunt(u, c) && tileDistance(shipTile(c), u.tile) <= SUB_TOUCH);
-    if (ship) {
-      declareWar(nations[u.owner], owner[ship.port.tile]);
-      captureShip(u, ship);
-      u.prey = null;
-      u.huntTimer = 0;
       continue;
     }
 
@@ -3473,7 +3515,7 @@ function subHint(u) {
   if (u.health < SUB_HEALTH && portNear(u)) return "Repairing at port";
   if (u.dock) return "Badly damaged: heading home to repair";
   const where = u.guard >= 0 ? "Guarding this area" : "Exploring the map";
-  if (u.prey) return `${where}: chasing a ${nations[owner[u.prey.port.tile]].name} trade ship`;
+  if (u.prey) { const holder = shipHolder(u.prey); return `${where}: chasing a ${holder === FREE ? "drifting" : nations[holder].name} trade ship`; }
   if (u.guard >= 0) return `${where}: hunts trade ships within ${SUB_GUARD_RADIUS} tiles of it. Click water to move it`;
   return `${where}, hunting trade ships of anyone who isn't your ally. Click water to guard a spot`;
 }
@@ -3863,9 +3905,11 @@ function updateAlerts() {
   if (!player) return;
   // Only attacks really reaching your land: boats on the way, or troops at your border.
   const incoming = [...attacks, ...boats].filter(a => a.target === player.id && (a.path || a.frontier.length > 0));
+  // Your own attacks still under way, each with a Retreat button.
+  const outgoing = [...attacks, ...boats].filter(a => a.attacker === player.id && !a.retreating && a.troops >= 1);
 
   for (const [id, parts] of alertElements) {
-    if (!incoming.some(a => a.id === id)) {
+    if (!incoming.some(a => a.id === id) && !outgoing.some(a => a.id === id)) {
       parts.root.remove();
       alertElements.delete(id);
     }
@@ -3882,6 +3926,32 @@ function updateAlerts() {
     parts.button.textContent = `Counter −${formatNumber(spend)}`;
     parts.button.disabled = spend < 1;
   }
+
+  for (const attack of outgoing) {
+    let parts = alertElements.get(attack.id);
+    if (!parts) {
+      parts = createOwnAttack(attack);
+      alertElements.set(attack.id, parts);
+    }
+    const where = attack.target === FREE ? "Claiming land" : `Attacking ${nations[attack.target].name}`;
+    parts.name.textContent = where + (attack.path ? " by boat" : "");
+    parts.troops.textContent = `${formatNumber(attack.troops)} troops`;
+  }
+}
+
+function createOwnAttack(attack) {
+  const root = element("div", "alert own panel");
+  const emblem = element("div", "emblem", player.glyph);
+  emblem.style.background = player.color;
+  const text = element("div", "alertText");
+  const name = element("div", "alertName");
+  const troops = element("div", "alertTroops");
+  text.append(name, troops);
+  const button = element("button", "counter", "Retreat");
+  button.addEventListener("click", () => { retreat(attack.id); updateAlerts(); updateHud(); });
+  root.append(emblem, text, button);
+  alertsBox.append(root);
+  return { root, name, troops, button };
 }
 
 function createAlert(attack) {
@@ -4687,7 +4757,7 @@ function drawBoats(now) {
     }
 
     // A spinning target marker where your own boat will land
-    if (nations[boat.attacker].isPlayer) {
+    if (nations[boat.attacker].isPlayer && !boat.retreating) {
       const landing = boat.path[boat.path.length - 1];
       const spin = now / 400;
       for (let k = 0; k < 24; k++) {
