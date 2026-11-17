@@ -424,6 +424,8 @@ const TRAIN_SPEED = 6;          // tiles per second
 const BOAT_SPEED = 5;           // tiles per second
 const TRACK_RANGE = 80;         // furthest a stop can be from its station, in a straight line (tiles)
 const TRACK_MAX_LENGTH = 100;   // and no line is laid longer than this, however it has to wind
+const TRAIN_GAP = 4;            // tiles: a train waits at its station until the one ahead on the same track is this far out
+const TRAIN_PATIENCE = 20;      // seconds: a stop waiting this much longer beats a route other trains are on
 const STATION_MAX_STOPS = 7;    // a station serves up to this many of its nearest cities and mines
 const TRACK_REUSE_COST = 0.25;  // new lines join onto existing track (anyone's) rather than lay their own...
 const TRACK_TURN_COST = 2;      // ...and avoid needless bends
@@ -2717,11 +2719,39 @@ function trainArrives(train) {
   }
 }
 
+/* Where a train goes next. It avoids stops and track its station's other trains are
+   already using, so they don't run nose to tail, but a stop that's been waiting
+   a long time still gets its turn. */
+function pickStop(train, stops) {
+  const station = train.station;
+  station.lastSent ||= new Map();
+  const busyStops = new Set(), busyTrack = new Set();
+  for (const other of trains) {
+    if (other === train || other.station !== station || !other.target) continue;
+    busyStops.add(other.target);
+    for (const tile of other.route.tiles) busyTrack.add(tile);
+  }
+  let best = null, bestScore = Infinity;
+  for (let k = 0; k < stops.length; k++) {
+    const stop = stops[(train.nextStop + k) % stops.length];
+    const tiles = station.routes.get(stop).tiles;
+    let shared = 0;
+    for (const tile of tiles) if (busyTrack.has(tile)) shared++;
+    const crowding = (busyStops.has(stop) ? 1 : 0) + shared / Math.max(1, tiles.length);
+    const waited = gameTime - (station.lastSent.get(stop) ?? -TRAIN_PATIENCE);
+    const score = crowding * TRAIN_PATIENCE - Math.min(waited, TRAIN_PATIENCE * 2) + k * .01;   // ties go round in turn
+    if (score < bestScore) { best = stop; bestScore = score; }
+  }
+  train.nextStop = stops.indexOf(best) + 1;
+  station.lastSent.set(best, gameTime);
+  return best;
+}
+
 function moveTrain(train) {
   const stops = train.station.stops;
   if (!train.target) {
     if (stops.length === 0) return;
-    train.target = stops[train.nextStop++ % stops.length];
+    train.target = pickStop(train, stops);
     train.route = train.station.routes.get(train.target);
     train.dist = train.route.length;
     train.pos = 0;
@@ -2729,6 +2759,13 @@ function moveTrain(train) {
   }
   // Turn back if the stop was lost on the way there.
   if (train.dir === 1 && !stops.includes(train.target)) train.dir = -1;
+  // Leaving the station: wait until any train that just left the same way is a few tiles ahead.
+  if (train.dir === 1 && train.pos === 0 && train.route.tiles.length > 1) {
+    const firstStep = train.route.tiles[1];
+    if (trains.some(other => other !== train && other.station === train.station && other.dir === 1
+        && other.pos < TRAIN_GAP && other.route && other.route.tiles[1] === firstStep
+        && (other.pos > 0 || trains.indexOf(other) < trains.indexOf(train)))) return;   // two ready at once: the first goes
+  }
   train.speed = TRAIN_SPEED * tradeSpeed(nations[owner[train.station.tile]], owner[train.target.tile]);
   train.pos += train.dir * train.speed * DT;
   if (train.dir === 1 && train.pos >= train.dist) {
