@@ -32,6 +32,7 @@
   #help { z-index: 6; }
   #helpBox { max-width: 600px; max-height: 86vh; overflow-y: auto; text-align: left; }
   #helpBox h1 { text-align: center; color: #ffd166; }
+  #helpBox .helpSmall { font-size: 11px; color: #8d7fb0; text-align: center; margin-top: 12px; }
   #helpBox h2 { margin: 14px 0 6px; font-size: 16px; font-weight: normal; color: #3ee6c1; }
   #helpBox ul { margin: 0; padding-left: 18px; color: #d8cfee; line-height: 1.5; }
   #helpBox li { margin-bottom: 4px; }
@@ -327,6 +328,7 @@
       <li>When someone attacks you, a warning shows at the top right. Press <b>Counter</b> to fight back.</li>
       <li>Allies trade with you and can send help, but attacking an ally makes you a traitor.</li>
     </ul>
+    <p class="helpSmall">The game counts plays anonymously (no names or emails) so it can be made better.</p>
     <div class="menuButtons"><button id="helpClose" class="menuButton">Got it</button></div>
   </div>
 </div>
@@ -2885,6 +2887,7 @@ function tick() {
 }
 
 function endGame(won, message) {
+  trackEnd(won, finale && finale.kind);
   phase = "over";
   finale = null;
   setPaused(false);
@@ -2908,6 +2911,78 @@ function endGame(won, message) {
   document.getElementById("deathReason").textContent = message ? message.replace(/ You lose!$/, "") : "Your nation has fallen.";
   setTimeout(() => document.getElementById("death").classList.add("show"), 1500);
 }
+
+/* ============================== PLAY STATS ==============================
+   Anonymous counts of how the game gets played, sent to PostHog so only the
+   game's owner can see them. No names, no emails: each browser just gets a
+   random id. Nothing is sent until STATS_KEY is filled in.
+   Visiting the site once with ?me marks this browser as the owner's, so the
+   owner's own games can be left out of the stats. */
+const STATS_KEY = "";                              // PostHog project key (public, starts with phc_)
+const STATS_HOST = "https://us.i.posthog.com";
+if (/[?&]me\b/.test(location.search)) remember("swizzOwner", "1");
+const statsPlayer = remembered("swizzPlayerId") || (() => {
+  const id = "p" + Math.random().toString(36).slice(2, 12);
+  remember("swizzPlayerId", id);
+  return id;
+})();
+const statsGame = { id: "g" + Math.random().toString(36).slice(2, 12), peak: 0, ended: false };
+
+function sendStat(event, details = {}) {
+  if (!STATS_KEY && !window.statsTest) return;
+  if (/^(localhost|127\.)/.test(location.hostname) && !window.statsTest) return;   // test games don't count
+  const body = JSON.stringify({
+    api_key: STATS_KEY, event, distinct_id: statsPlayer, timestamp: new Date().toISOString(),
+    properties: { ...details, owner: remembered("swizzOwner") === "1", $current_url: location.origin + location.pathname },
+  });
+  if (window.statsTest) return window.statsTest.push(JSON.parse(body));
+  try { navigator.sendBeacon(STATS_HOST + "/i/v0/e/", new Blob([body], { type: "text/plain" })); } catch {}
+}
+
+const landShare = nation => Math.round(1000 * nation.tiles / Math.max(1, landTiles.length)) / 10;   // percent, 1 decimal
+function gameStats() {
+  const built = {};
+  for (const b of buildings) if (owner[b.tile] === player.id) built[b.type] = (built[b.type] || 0) + 1;
+  return {
+    game: statsGame.id, difficulty: difficulty.name, mode: gameMode.name,
+    minutes: Math.round(gameTime / 6) / 10, land: landShare(player), peak_land: Math.max(statsGame.peak, landShare(player)), built,
+  };
+}
+
+function trackStart(tile) {
+  const x = tile % W, y = tile / W | 0;
+  let coast = false, deposits = 0;
+  for (let dy = -12; dy <= 12; dy++)
+    for (let dx = -12; dx <= 12; dx++) {
+      const i = (y + dy) * W + x + dx;
+      if (x + dx < 0 || x + dx >= W || y + dy < 0 || y + dy >= H) continue;
+      if (Math.abs(dx) <= START_RADIUS + 1 && Math.abs(dy) <= START_RADIUS + 1 && isWater(i)) coast = true;
+      if (deposit[i]) deposits++;
+    }
+  const size = landmassSizes[landmass[tile]];
+  sendStat("game_start", {
+    game: statsGame.id, difficulty: difficulty.name, mode: gameMode.name, color: playerColor,
+    start_x: Math.round(100 * x / W), start_y: Math.round(100 * y / H),   // where on the map, in percent
+    coast, island: size < CONTINENT_SIZE, landmass_share: Math.round(100 * size / landTiles.length),
+    deposit_tiles_near: deposits,      // deposit tiles within 12 tiles of the start
+  });
+}
+setInterval(() => { if (phase === "playing" && player) statsGame.peak = Math.max(statsGame.peak, landShare(player)); }, 1000);
+
+function trackEnd(won, kind) {
+  if (statsGame.ended || !player) return;
+  statsGame.ended = true;
+  sendStat("game_end", { ...gameStats(), result: won ? "win" : "loss", how: kind || "fallen" });
+}
+// Closing the tab mid-game counts as quitting.
+addEventListener("pagehide", () => {
+  if ((phase === "playing" || phase === "finale") && !statsGame.ended) {
+    statsGame.ended = true;
+    sendStat("game_quit", gameStats());
+  }
+});
+sendStat("visit", { returning: remembered("swizzSeenBefore") === "1" });
+remember("swizzSeenBefore", "1");
 
 /* ============================== PLAYER INPUT ============================== */
 const canvas = document.getElementById("view");
@@ -3230,6 +3305,7 @@ function chooseStart(tile) {
   updateNationUi();
   tallyBuildings();
   updateHud();
+  trackStart(tile);
 }
 
 function orderAttack(tile) {
